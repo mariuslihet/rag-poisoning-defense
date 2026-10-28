@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spades-lab"
+version = "0.5.0"
+description = "A local laboratory for retrieval poisoning and prompt injection defense evaluation"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+local = ["chromadb>=1.0,<2"]
+
+[project.scripts]
+spades = "spades.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["spades*"]
+
+[tool.setuptools.package-data]
+spades = ["web/*.html", "web/*.css", "web/*.js"]

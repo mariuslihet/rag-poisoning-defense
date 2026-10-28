@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spades — Security Laboratory</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<aside class="sidebar">
+  <a class="brand" href="/" aria-label="Spades home">SPADES<span class="version">SECURITY RESEARCH / 05</span></a>
+  <p class="nav-label">WORKSPACE</p>
+  <nav aria-label="Main navigation">
+    <button class="nav-item selected" data-view="overview" aria-current="page"><span aria-hidden="true">◫</span> Overview</button>
+    <button class="nav-item" data-view="experiments"><span aria-hidden="true">⊞</span> Experiments <span id="run-count" class="count">0</span></button>
+    <button class="nav-item" data-view="corpus"><span aria-hidden="true">▤</span> Scenario library <span class="count">196</span></button>
+    <button class="nav-item" data-view="presets"><span aria-hidden="true">≡</span> Presets <span id="preset-count" class="count">3</span></button>
+    <button class="nav-item" data-view="bookmarks"><span aria-hidden="true">☆</span> Bookmarks <span id="bookmark-count" class="count">0</span></button>
+    <button class="nav-item" data-view="runtime"><span aria-hidden="true">⌘</span> Local runtime</button>
+  </nav>
+  <div class="sidebar-note"><div class="local-label"><span class="dot"></span> LOCAL BY DESIGN</div><p>Your models. Your data.<br>Every decision, inspectable.</p><span class="muted">No paid cloud services</span></div>
+  <div class="sidebar-footer">SPADES SECURITY LAB <span>v0.5.0</span></div>
+</aside>
+<div class="shell">
+  <header class="topbar"><div><span class="muted">Workspace</span><span class="slash">/</span><span id="breadcrumb">Overview</span></div><div class="top-actions"><span id="runtime-pill" class="badge">Checking runtime</span><button class="primary new-run">＋ New experiment</button></div></header>
+  <main id="main" tabindex="-1">
+    <div id="global-error" class="notice danger" role="alert" hidden></div>
+    <section id="active-job" class="panel active-job" hidden aria-label="Current experiment">
+      <div class="section-heading"><div><span id="job-mode" class="eyebrow">EXPERIMENT RUNNING</span><h2 id="job-label">Preparing experiment</h2></div><div class="export-actions"><button id="live-evidence" class="secondary" disabled>View completed results</button><button id="stop-run" class="secondary">Stop after active cases</button></div></div>
+      <progress id="job-progress" max="100" value="0" aria-label="Experiment progress"></progress><p id="job-status" role="status"></p><ul id="job-activity" class="job-activity" aria-label="In-flight scenarios"></ul>
+    </section>
+
+    <section id="view-overview" class="view">
+      <div class="page-heading"><div><div class="eyebrow">RETRIEVAL SECURITY / EVIDENCE FIRST</div><h1>Evaluate evidence. Measure risk.</h1><p>Structured evaluations for retrieval integrity, confidential data handling and enterprise decisions.</p></div><div class="run-picker"><label for="report-select">Active evidence</label><select id="report-select"><option>No saved experiments</option></select></div></div>
+      <div id="mode-notice" class="notice" role="status">Loading saved evaluation evidence…</div>
+      <div id="metric-grid" class="metric-grid"></div>
+      <div class="overview-grid">
+        <section class="panel"><div class="section-heading"><div><span class="eyebrow">DEFENSE PERFORMANCE</span><h2>Attack families</h2></div><div class="legend"><span class="legend-before">Vulnerable</span><span class="legend-after">Secured</span></div></div><div id="family-chart" class="family-chart"></div><p class="small muted">Attack success rate · completed attacks only · lower is better</p></section>
+        <section class="panel"><span class="eyebrow">EXPERIMENT SNAPSHOT</span><h2>Behind the result</h2><dl id="snapshot" class="snapshot"></dl><div class="subtle-note">A lower attack rate is useful only when legitimate tasks still succeed.</div></section>
+      </div>
+      <section class="panel ledger"><div class="section-heading"><div><span class="eyebrow">TRACE EVERY DECISION</span><h2>Experiment ledger <span id="visible-count" class="muted"></span></h2></div><div class="export-actions"><a id="download-report" class="secondary" href="#" download>↓ Export JSON</a><a id="download-csv" class="secondary" href="#" download>↓ Export CSV</a></div></div>
+        <div class="filters"><label class="search-label" for="search">Search cases<input id="search" type="search" placeholder="Find a case, question or response…"></label><label for="category-filter">Attack family<select id="category-filter"><option value="">All families</option></select></label><label for="outcome-filter">Outcome<select id="outcome-filter"><option value="">All outcomes</option><option value="attack">Attack assertion matched</option><option value="utility">Review task utility</option><option value="passed">Task passed</option><option value="error">Runtime errors</option><option value="bookmarked">Bookmarked cases</option></select></label></div>
+        <div class="table-scroll"><table><caption class="sr-only">Paired experiment outcomes. Open a case to inspect its evidence.</caption><thead><tr><th scope="col">Scenario</th><th scope="col">Family</th><th scope="col">Vulnerable</th><th scope="col">Secured</th><th scope="col">Task utility</th><th scope="col">Time</th></tr></thead><tbody id="case-rows"></tbody></table></div><p id="ledger-empty" class="empty" hidden>No cases match these filters.</p>
+      </section>
+      <details class="panel limits"><summary>Measurement boundaries and grading limits</summary><ul id="limits"></ul></details>
+    </section>
+
+    <section id="view-experiments" class="view" hidden>
+      <div class="page-heading"><div><div class="eyebrow">REPRODUCIBLE BY DESIGN</div><h1>Experiment history.</h1><p>Keep evidence from every run. Compare equivalent scenario sets.</p></div><button class="primary new-run">＋ New experiment</button></div>
+      <section class="panel"><div class="section-heading"><h2>Saved experiments</h2><button id="refresh-history" class="secondary">Refresh</button></div><div id="history-list"></div></section>
+      <section class="panel compare-panel"><span class="eyebrow">MEASURE THE TRADE-OFF</span><h2>Compare two experiments</h2><div class="filters"><label for="compare-a">Reference run<select id="compare-a"></select></label><label for="compare-b">Candidate run<select id="compare-b"></select></label><button id="compare-button" class="primary">Compare evidence</button></div><div id="comparison" aria-live="polite"></div></section>
+    </section>
+
+    <section id="view-corpus" class="view" hidden>
+      <div class="page-heading"><div><div class="eyebrow">SYNTHETIC DATA / REAL BOUNDARIES</div><h1>Enterprise evaluation library.</h1><p>196 scenarios across foundation and enterprise profiles, with inspectable documents and scoring criteria.</p></div></div>
+      <div class="notice">All secrets and destinations are synthetic. Security quotes and reference URLs are legitimate controls that may expose overblocking.</div>
+      <div class="filters"><label for="corpus-profile">Profile<select id="corpus-profile"><option value="complex">Enterprise scenarios · 96 cases</option><option value="foundation">Foundation · 100 cases</option></select></label><label for="corpus-search">Search scenario library<input id="corpus-search" type="search" placeholder="Search documents, domains or families…"></label><label for="corpus-category">Family<select id="corpus-category"><option value="">All families</option></select></label></div><div id="corpus-list" class="corpus-grid"></div>
+    </section>
+
+    <section id="view-presets" class="view" hidden>
+      <div class="page-heading"><div><div class="eyebrow">REPEAT THE EXPERIMENT</div><h1>Experiment configurations.</h1><p>Save your settings once. Reuse them across runs.</p></div><button class="primary new-run">＋ Create a preset</button></div>
+      <div class="notice">Presets store experiment settings, not results. Choose a preset to review its settings before launching.</div><div id="preset-list" class="corpus-grid"></div>
+    </section>
+    <section id="view-bookmarks" class="view" hidden>
+      <div class="page-heading"><div><div class="eyebrow">KEEP WHAT MATTERS</div><h1>Bookmarked evidence.</h1><p>Bookmark a case, add your observations, and return to the original evidence.</p></div></div>
+      <div class="filters"><label for="bookmark-search">Search bookmarks<input id="bookmark-search" type="search" placeholder="Search cases, questions or your notes…"></label></div><div id="bookmark-list"></div>
+    </section>
+
+    <section id="view-runtime" class="view" hidden>
+      <div class="page-heading"><div><div class="eyebrow">ON YOUR MACHINE</div><h1>Local runtime.</h1><p>Inspect the components that power real model experiments.</p></div><button id="refresh-runtime" class="secondary">↻ Check again</button></div>
+      <div id="runtime-components" class="runtime-grid"></div><section class="panel"><h2>Prepare the local stack</h2><p>Run these commands from the Spades project directory. Model preparation downloads public weights once; experiment execution uses loopback only.</p><pre>.\.venv\Scripts\python.exe -m pip install -e ".[local]"
+.\.venv\Scripts\python.exe -m spades prepare-models
+.\.venv\Scripts\python.exe -m spades doctor</pre><p id="runtime-error" class="small"></p></section>
+    </section>
+    <footer class="page-footer"><span>SPADES <span class="muted">/ Local security evaluation and evidence review.</span></span><span class="muted">Local workspace · English · v0.5.0</span></footer>
+  </main>
+</div>
+
+<dialog id="new-dialog" aria-labelledby="new-title">
+<form id="run-form">
+  <div class="dialog-heading"><div><span class="eyebrow">ASYNC EVALUATION QUEUE</span><h2 id="new-title">New experiment</h2></div><button type="button" class="icon-button close-dialog" aria-label="Close new experiment">✕</button></div>
+  <p>Choose the scenarios you need. Completed cases are saved individually while the queue runs.</p>
+  <label for="run-preset">Apply a preset<select id="run-preset"><option value="">Custom configuration</option></select></label>
+  <div class="form-grid"><label for="run-profile">Evaluation profile<select id="run-profile"><option value="complex">Enterprise · 96 scenarios</option><option value="foundation">Foundation · 100 scenarios</option></select></label><label for="run-mode">Execution mode<select id="run-mode"><option value="local" selected>Local model · Qwen2.5</option><option value="demo">Demo · simulated responses</option></select></label></div>
+  <p id="profile-description" class="profile-description">Enterprise scenarios retain their full documents and typed grading. A six-scenario batch is selected by default.</p>
+  <label for="run-scope">What to run<select id="run-scope"><option value="sample">Small balanced batch</option><option value="selected">Choose exact scenarios</option><option value="all">All matching scenarios</option><option value="remaining">Untested scenarios from a previous experiment</option><option value="errors">Retry runtime errors from a previous experiment</option></select></label>
+  <label id="source-run-field" for="run-source" hidden>Previous experiment<select id="run-source"><option value="">Choose an experiment</option></select></label>
+  <div class="form-grid"><label for="run-domain">Business domain<select id="run-domain"><option value="">All domains</option></select></label><label for="run-category">Scenario family<select id="run-category"><option value="">All families</option></select></label></div>
+  <section id="scenario-picker" class="scenario-picker" hidden aria-label="Select individual scenarios">
+    <label for="scenario-search">Find scenarios<input id="scenario-search" type="search" placeholder="Search by case ID, question or domain"></label>
+    <div class="picker-actions"><button id="select-visible" type="button" class="secondary">Select visible</button><button id="clear-scenarios" type="button" class="secondary">Clear selection</button><span id="scenario-count" role="status">0 selected</span></div>
+    <div id="scenario-options" class="scenario-options"></div>
+  </section>
+  <div class="form-grid"><label id="batch-size-field" for="run-limit">Maximum scenarios in this batch<input id="run-limit" type="number" min="1" max="500" value="6" required></label><label for="run-concurrency">Concurrent scenarios<select id="run-concurrency"><option value="1">1 · sequential</option><option value="2" selected>2 · bounded async</option><option value="3">3 · bounded async</option><option value="4">4 · bounded async</option></select></label></div>
+  <div class="form-grid"><label for="run-policy">Defense policy<select id="run-policy"><option value="strict">Strict filtering</option><option value="sanitize">Sanitize suspicious context</option></select></label><label for="run-k">Retrieved chunks<input id="run-k" type="number" min="1" max="50" value="20" required></label></div>
+  <label for="run-threshold">Minimum trust score<input id="run-threshold" type="number" min="0" max="1" step="0.05" value="0.7" required></label>
+  <div id="selection-preview" class="selection-preview" role="status">Choose a small batch or individual scenarios.</div>
+  <div class="subtle-note">Each scenario generates a vulnerable and a secured response. Workers overlap requests; Ollama may queue generation according to available resources. Embeddings are reused locally when the text and model digest match.</div>
+  <div class="preset-save"><label for="preset-name">Save this configuration as a preset<input id="preset-name" maxlength="60" placeholder="e.g. Procurement · selected cases"></label><button id="save-preset" class="secondary" type="button">Save preset</button></div>
+  <p id="run-error" class="error" role="alert"></p>
+  <div class="dialog-actions"><button type="button" class="secondary close-dialog">Cancel</button><button id="launch-run" class="primary" type="submit">Start selected batch →</button></div>
+</form></dialog>
+<dialog id="case-dialog" aria-labelledby="case-title"><div class="dialog-heading"><div><span id="case-eyebrow" class="eyebrow">CASE EVIDENCE</span><h2 id="case-title"></h2></div><button class="icon-button close-dialog" aria-label="Close case evidence">✕</button></div><div id="case-content"></div></dialog>
+<div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>
