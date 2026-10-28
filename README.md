@@ -6,12 +6,15 @@ The current interface uses a navy, blue and off-white design with explicit asses
 
 ## Open the laboratory
 
+Complete [Runtime preparation](#runtime-preparation) before launching Spades for the first time. From the cloned repository folder, run:
+
 ```powershell
-cd D:\PROIECTE\Spades
 .\Start-Spades.ps1
 ```
 
-Open [Spades](http://127.0.0.1:8765). The required models and local Python environment are already installed on this machine.
+The launcher above is for Windows PowerShell. On other platforms, use `python -m spades serve` from the prepared Python environment.
+
+Open [Spades](http://127.0.0.1:8765/) in your browser. Keep the server running while using the dashboard. Local inference requires Ollama to be running with the required models available.
 
 Use **New experiment** to select an evaluation profile, execution mode, defense policy, trust threshold, retrieval depth, scenario family and maximum case count. New runs default to a six-case batch and two async workers. Choose exact scenarios, filter by business domain or family, or explicitly choose all matching scenarios. Built-in local presets use six-case batches.
 
