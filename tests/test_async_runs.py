@@ -229,6 +229,62 @@ class SelectionAndRecoveryTests(unittest.TestCase):
         self.assertEqual(len(previous), 4)
         self.assertFalse(set(previous) & {c.case_id for c in third_cases})
 
+    def test_assessment_retests_exclude_errors_and_obey_batch_bound(self):
+        report = run_suite(limit=6)
+        for row in report["results"]:
+            row["secured_utility"] = False
+        report["results"][0]["error"] = "Synthetic connection error"
+        report["results"][1]["secured_utility"] = True
+        self.store(report, "assessment")
+        _, cases, previous = self.manager.resolve_selection({
+            "selection_scope": "failed", "source_run_id": report["run_id"], "limit": 2})
+        self.assertEqual([c.case_id for c in cases], [r["case_id"] for r in report["results"][2:4]])
+        self.assertEqual(previous, [])
+
+    def test_attack_retests_exclude_controls_and_can_filter_domain(self):
+        ids = ["hr-baseline-concise", "hr-indirect_injection-1", "api-indirect_injection-1"]
+        report = run_suite(case_ids=ids)
+        for row in report["results"]:
+            row["secured_success"] = True
+        self.store(report, "attacks")
+        _, cases, _ = self.manager.resolve_selection({
+            "selection_scope": "attacks", "source_run_id": report["run_id"], "domain": "hr"})
+        self.assertEqual([c.case_id for c in cases], [ids[1]])
+
+    def test_assessment_retests_require_source_and_compatible_config(self):
+        for scope in ("failed", "attacks"):
+            with self.assertRaises(ValueError):
+                validate_config({"selection_scope": scope})
+        report = run_suite(limit=2)
+        for row in report["results"]:
+            row["secured_utility"] = True
+            row["secured_success"] = False
+        self.store(report, "passed")
+        for scope in ("failed", "attacks"):
+            with self.assertRaisesRegex(ValueError, "has no"):
+                self.manager.resolve_selection({"selection_scope": scope, "source_run_id": report["run_id"]})
+            with self.assertRaisesRegex(ValueError, "same profile"):
+                self.manager.resolve_selection({"selection_scope": scope, "source_run_id": report["run_id"], "policy": "sanitize"})
+
+    def test_assessment_retest_runs_and_persists_fresh_paired_evidence(self):
+        source = run_suite(limit=3)
+        for row in source["results"]:
+            row["secured_utility"] = False
+        self.store(source, "source")
+        active = self.manager.start({"selection_scope": "failed", "source_run_id": source["run_id"], "limit": 1})
+        deadline = time.monotonic() + 5
+        while self.manager.snapshot()["status"] in ("running", "stopping") and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(self.manager.snapshot()["status"], "completed")
+        saved = self.manager.reports()[active["run_id"]][1]
+        self.assertEqual(saved["configuration"]["selection_scope"], "failed")
+        self.assertEqual(saved["configuration"]["source_run_id"], source["run_id"])
+        self.assertEqual(saved["planned_cases"], 1)
+        self.assertEqual(saved["results"][0]["case_id"], source["results"][0]["case_id"])
+        self.assertIn("vulnerable_response", saved["results"][0])
+        self.assertIn("secured_response", saved["results"][0])
+        self.assertEqual(self.manager.reports()[source["run_id"]][1]["results"], source["results"])
+
     def test_continuation_rejects_incompatible_policy(self):
         report = run_suite(limit=2)
         self.store(report, "source")

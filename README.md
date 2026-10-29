@@ -22,6 +22,93 @@ Use **Run untested** in experiment history to continue in batches without repeat
 
 The dashboard includes live worker phases, checkpoints after every case, stopping after active cases, saved run history, compatible-run comparisons, searchable case evidence, JSON/CSV exports, persistent presets, case bookmarks and review notes. The scenario library exposes the complete source records and reference assertions. Source material and model outputs are rendered as text.
 
+Use **Retest failed tasks** in history to revisit completed cases whose secured response failed the task assessment. **Retest matched attacks** selects adversarial cases where the secured response matched an attack objective. Both use the chosen report as their source, preserve compatible experiment settings, exclude runtime errors, and respect the batch maximum and domain/family filters. These are fresh paired evaluations; earlier evidence remains available.
+
+Sort the experiment ledger by duration or scenario ID to find slow cases. **Export visible cases** downloads the currently filtered and sorted evidence as JSON, including the source run ID, configuration and active filters. This subset export carries no aggregate metrics; use the full report exports for campaign totals.
+
+In experiment history, use **Name and notes** to label a run, record research observations and pin important experiments. Pinned runs appear first; history search includes names, notes, models and run IDs, and can be combined with status and pinned-only filters. Annotations are saved in the local workspace independently of the original evidence files.
+
+Compatible experiment comparisons include a case-level table showing secured-task regressions and improvements, newly matched attack objectives and resolved attack matches. Open either run's case evidence directly from the table. Cases with a runtime error in either run are unmeasured, and legitimate controls are excluded from attack transitions. Comparisons require identical mode, model, profile, scenario IDs, dataset and grading versions; they describe observed differences and do not establish causation.
+
+Comparisons initially show changed cases. Use **Show cases** and **Search comparison** to focus on regressions, improvements, changed attack outcomes, unmeasured cases or the complete set. Time changes are candidate minus reference in seconds; enterprise field-accuracy changes use percentage points. Missing values and cases with errors display N/A. **Export comparison JSON** includes the visible subset, both run configurations, active filters and clearly labeled full-comparison counts. **Choose visible regressions to retest** opens an exact-scenario selection using the candidate settings; review or reduce that selection before launching a fresh paired evaluation.
+
+## Diagnose and review complex evaluations
+
+The overview includes **Diagnostics and coverage**, computed from the saved report without making model calls or changing original evidence. Observations distinguish runtime errors, synthetic restricted-data disclosure, matched attack objectives, missing retrieved sources, required sources excluded by defense, allowed sources omitted from the final context, invalid response contracts, incorrect fields, citation gaps and failed foundation fact assertions. Multiple observations can apply to the same case; their counts are not distinct failure totals or proven root causes.
+
+- Select an observation tile, then combine observation, business-domain and scenario/failed-field search filters to build a focused review list. Expand a case for suggested investigation steps and open its complete evidence.
+- Open **Domain and attack-family scorecards** for attempted/measured counts, runtime errors, task pass fractions, attack-match fractions and field accuracy. Each rate shows its denominator. Runtime errors are excluded from assessment rates, controls are excluded from attack rates, and field accuracy is weighted by recorded assertions. An empty denominator displays N/A. Unexecuted planned cases are not treated as passed or failed.
+- In case evidence, expand **Required-source delivery trace** to follow each required record through retrieval, defense approval, final context admission and citation. Historical reports without final-context IDs show that stage as unrecorded. Source presence does not prove that every required fact was supplied or used correctly.
+- Field assessment tables show expected and observed values, reference types, absolute numeric tolerances and assertion descriptions. Raw responses and defense decisions remain inspectable alongside the diagnostics.
+- **Review retest selection** opens an exact-scenario picker containing only the filtered diagnostic cases. Review or reduce that selection before starting; inference is never launched automatically by a diagnostic action.
+- **Export diagnostics** downloads the full derived analysis with the model/configuration, active review filters and visible case IDs. Original report exports remain unchanged. The derived analysis is also available through the local `GET /api/analysis/<run_id>` endpoint.
+
+Diagnostics are observations about recorded evidence. They do not replace semantic review, establish causal explanations or guarantee security. Foundation assertions and enterprise typed rubrics retain their distinct assessment contracts.
+
+## Curate reusable test suites
+
+**Test suites** preserve an exact ordered selection of built-in scenarios, independently of model execution and defense settings. In **New experiment**, choose a sample, filter cases or select exact scenarios, then use **Save selection as a test suite**. The current selection is resolved before saving: a sampled or continuation-based selection becomes a fixed set of IDs. Add a name and purpose, review the membership, then save without running inference.
+
+Each saved suite records its profile, dataset/grading versions, creation/update times and revision. Use the suite library to search names, descriptions and scenario IDs, inspect membership, edit notes or IDs, and configure an experiment. Edits increment the revision; a stale browser edit is rejected rather than overwriting a newer revision. Existing experiment reports retain their original case selections. Suite revisions track updates to the current definition; they are not a browsable archive of earlier definitions.
+
+**Export suite** downloads a portable version-1 JSON manifest containing only the suite description, profile, scenario IDs and compatibility versions. **Import a suite manifest** opens a review editor before saving. Imports reject incompatible dataset/grading versions, unknown or duplicate scenario IDs, mixed profiles and unknown options. Rename an import when its name already exists. Importing never installs code, modifies source fixtures or launches inference. Suite definitions and experiment annotations are local workspace data in `output/workspace.json` and are excluded from Git by default.
+
+Before launching, expand **Inspect the selected run plan** to review scenario/response counts, domain and family coverage, total source records, fixture text volume, paired typed assertions and foundation fact checks. Volume is calculated before chunking and retrieval; fixture characters exclude the runtime synthetic appendix. These values describe workload, not expected pass rates or an execution-time guarantee. Opening a suite revalidates its compatibility and shows the exact selection for review; it does not launch automatically.
+
+## Configure local model experiments
+
+The experiment form lists installed generation models from the local Ollama registry, excluding the designated embedding model and remote-routed entries. Selecting a model does not download it. The selected model and nomic embedding runtime must be available before a local campaign starts; there is no fallback to another model or the simulator. The provider checks installed local-weight metadata before sending chat or embedding inputs and records the selected model digest when available.
+
+Expand **Model generation settings** to set temperature (0–2), an optional seed (0–2147483647), thinking mode (model default/enabled/disabled), response tokens (128–8192), context tokens (2048–32768) and per-request timeout (30–600 seconds). Response allowance must be smaller than the context window. Enterprise defaults remain 1400 response tokens and 16384 context tokens; foundation defaults remain 350 and 4096. Both retain temperature 0, a 180-second request timeout, and unspecified seed/thinking behavior. These controls use [Ollama's documented chat options](https://github.com/ollama/ollama/blob/main/docs/api.md#generate-a-chat-completion).
+
+Thinking overrides require a model/runtime that supports them. Some thinking models can use their response allowance without emitting a final answer. Spades records completion reasons, generated/prompt token counts, empty-final-answer status and thinking-text length separately for each arm; it does not export thinking text. Diagnostics identify empty final answers and recorded response-limit exhaustion. Changing an allowance or thinking mode requires a fresh explicit evaluation; there is no hidden retry. A seed helps repeatability but does not establish identical outputs across runtime versions, hardware or changed weights.
+
+Small context windows can truncate inputs inside the model runtime. Source traces measure what was submitted in the request, not proof of every token retained by the model. Larger windows and response allowances can increase memory requirements and time. Request timeouts apply to individual local HTTP calls, not to the whole scenario or campaign.
+
+Settings are preserved in presets, checkpoints and final reports, restored when reopening previous experiments, and displayed in comparisons. They are explicitly marked unapplied in demo mode. Continuations require matching generation settings and model names; known weight-digest changes block continuation and comparison. Older reports without settings use the historical profile defaults when preparing a continuation and remain labeled unrecorded in evidence views. An installed tag name alone does not prove identical historical weights.
+
+The same controls are available from the CLI:
+
+```powershell
+python -m spades run --mode local --profile foundation --model qwen3.5:4b --case-id hr-baseline-concise --seed 42 --thinking disabled --temperature 0 --max-tokens 768 --context-window 4096 --request-timeout 60 --output output/model-review
+```
+
+The example requires that exact model to be installed locally. On a measured single foundation case, Qwen3.5 returned empty final answers with its default thinking behavior at a 768-token allowance. A separate run with thinking explicitly disabled completed both responses without runtime errors and passed the secured fact assertion. This is a functional configuration check, not a benchmark of enterprise reasoning or a controlled timing comparison.
+
+## Apply explicit acceptance criteria
+
+The overview's **Quality gate** assesses the saved scope against the current workspace acceptance policy. It reports **Pass**, **Fail**, or **Insufficient evidence**, with observed values, thresholds, measured denominators and contributing scenario IDs. An observed criterion failure takes precedence over missing evidence; the detailed checks retain both. Running reports never pass, and cancelled/partial reports require the policy to explicitly waive completed-scope requirements.
+
+The default research policy requires real local inference, a completed scope, at least six measured cases, one legitimate control, one adversarial case and one measured domain. It requires 80% secured task success, 80% enterprise field accuracy, 90% enterprise citation coverage, 100% valid enterprise output, at most 10% matched secured attack objectives, zero synthetic-canary disclosure and zero runtime errors. Field/citation/format criteria are not applicable to foundation fact checks. Missing enterprise assessments or missing leakage measurements are insufficient evidence, not successful zero-error measurements. Runtime errors count separately and are excluded from assessment-rate denominators.
+
+Expand **Edit workspace acceptance policy** to change the declared criteria. Rates use fractions from 0 to 1. A zero minimum adversarial count explicitly permits an empty attack set to skip the attack-rate criterion. Policy updates use revision checks to reject stale writes. They reassess the workspace view of saved runs without modifying original report files. **Reload saved policy** discards unsaved edits and loads the current revision.
+
+**Export gate result** saves the verdict, full criteria, observations and source scope/model metadata. **Export policy** saves a portable JSON policy suitable for the CLI. **Review cases contributing to failed criteria** prepares an exact-scenario selection; insufficient coverage requires choosing additional scenarios rather than merely repeating existing ones. A passing gate applies only to the declared checks and recorded selection. It is not a security certification or evidence about untested scenarios.
+
+To assess saved evidence without making model calls:
+
+```powershell
+python -m spades assess --report output/enterprise-review/report.json --policy acceptance-policy.json --output output/enterprise-review/quality-gate.json
+```
+
+Omit `--policy` to use research defaults. Exit codes are **0** for pass, **3** for failed criteria, **4** for insufficient evidence and **2** for invalid input. The JSON result is also printed to standard output. Output must be separate from the source report and policy. The local dashboard exposes the same assessment through `GET /api/gate/<run_id>`.
+
+Add `--gate-policy acceptance-policy.json` to a `spades run` command to validate the policy before inference and write `quality-gate.json` after the run. Original reports remain unchanged. Runtime execution errors retain exit code 1; otherwise a failing or insufficient gate returns 3 or 4. Demonstration evidence cannot satisfy the default local-model requirement; explicitly relaxing it is suitable for pipeline tests, not model-security claims.
+
+### Reuse and preview policies
+
+The acceptance-policy editor can **Save as named policy** to keep an immutable snapshot for reuse. Names must be unique; the workspace supports up to 100 snapshots. Loading a named policy fills the editor without applying it. **Save acceptance policy** remains the explicit action that changes the active workspace criteria. Snapshots are stored separately from the active revision and do not rewrite experiment evidence.
+
+Use **Preview against current evidence** to compare the draft with the active policy on exactly the same saved report. The preview shows both verdicts and each changed target or criterion status, including requirements that become not applicable. It makes no model calls and does not activate the draft. **Export policy preview** saves both full assessments and definitions for review. Editing the draft, switching reports or changing the active policy revision invalidates the displayed preview.
+
+### Review compatible acceptance history
+
+Expand **Compatible acceptance history** to load a chronological assessment of matching saved runs under one fixed current policy. Compatibility requires the same declared scenario scope, profile, mode, model tag, dataset, grading, recorded generation settings and weight digest. Scenario order does not affect grouping. Missing historical generation settings or digests remain unknown and are grouped separately from recorded identities; matching unknown labels do not prove identical environments. Defense policy, trust and retrieval depth may differ and are shown alongside each result.
+
+The history shows verdicts, measured/planned scope, observed task and attack rates, and criterion transitions. Pass-to-fail and fail-to-pass transitions are separate from criteria becoming measurable or evidence becoming insufficient. Running and partial records remain subject to gate completeness rules. Dates are normalized before chronological ordering. Incompatible runs are counted as excluded; malformed compatible evidence is reported separately.
+
+History verdicts are retrospective under the policy snapshot displayed with the result. They do not reconstruct the policy originally active at execution time, establish causation or provide statistical significance. **Export acceptance history** saves that snapshot and the grouped observations. The history resets when the selected report or active policy revision changes.
+
 ## Evaluation profiles
 
 | Profile | Cases | Data and assessment |
@@ -136,6 +223,6 @@ The dashboard binds to loopback and enforces Host validation, exact-origin POSTs
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-The current suite contains 81 software tests, including independent arithmetic references, typing/format failures, citation validation, attack discussion versus adoption, canary disclosure, adaptive chunk integrity, hybrid retrieval, profile dispatch and protected dashboard APIs. Read [verification](docs/VERIFICATION.md).
+The Python suite contains 164 software tests, including independent arithmetic references, typing/format failures, citation validation, attack discussion versus adoption, canary disclosure, adaptive chunk integrity, hybrid retrieval, profile dispatch, selective assessment retests, persistent experiment annotations, case-level comparisons, source-delivery diagnostics, denominator correctness, portable test-suite validation, revision conflicts, run planning, generation controls, completion-metadata isolation, local-weight enforcement, acceptance-policy evaluation, automation exit codes, named-policy persistence, policy previews, compatible chronological histories and protected dashboard APIs. Eight additional JavaScript tests verify comparison filters/exports and runtime-view initialization; run them with `node --test tests/test_comparison_view.cjs tests/test_runtime_view.cjs` when Node.js is available. Node.js is used only for these frontend tests and is not required to run Spades. Read [verification](docs/VERIFICATION.md).
 
 `complex_corpus.py` defines enterprise records, task facets, output schemas and independent reference assertions. `grading.py` evaluates typed responses. `evaluation.py` orchestrates paired cases and context budgets. `providers.py` contains local model and retrieval adapters. `server.py` and `web/` provide the dashboard and durable workspace controls.

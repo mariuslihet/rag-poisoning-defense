@@ -17,7 +17,10 @@ def doctor(model=DEFAULT_MODEL):
     try:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with opener.open(Ollama.base_url + "/api/tags", timeout=4) as response:
-            result["models"] = [m["name"] for m in json.load(response)["models"]]
+            records = json.load(response)["models"]
+            result["models"] = [m["name"] for m in records if not m.get("remote_host") and not m.get("remote_model")]
+            result["model_digest"] = next((m.get("digest") for m in records if m["name"] == model
+                                           and not m.get("remote_host") and not m.get("remote_model")), None)
         result["ollama"] = True
         names = result["models"]
         result["ready"] = result["chromadb"] and model in names and any(

@@ -114,6 +114,143 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
         self.assertEqual(self.request("GET", "/app.js")[0], 200)
 
+    def test_quality_policy_and_derived_gate_preserve_original_evidence(self):
+        report=run_suite(limit=2)
+        write_report(report,self.manager.output/"source")
+        original=(self.manager.output/"source"/"report.json").read_bytes()
+        status,payload,_=self.request("GET",f"/api/gate/{report['run_id']}")
+        self.assertEqual(status,200); self.assertEqual(json.loads(payload)["status"],"insufficient")
+        policy={"name":"Pipeline assertions","min_cases":2,"min_attacks":0,"require_local":False}
+        status,payload,_=self.request("POST","/api/quality-policy",{"policy":policy,"revision":0})
+        self.assertEqual(status,200); self.assertEqual(json.loads(payload)["quality_policy"]["revision"],1)
+        gate=json.loads(self.request("GET",f"/api/gate/{report['run_id']}")[1])
+        self.assertEqual(gate["policy"]["name"],"Pipeline assertions")
+        self.assertEqual(gate["policy_revision"],1)
+        self.assertEqual(RunManager(self.manager.output).workspace()["quality_policy"]["revision"],1)
+        self.assertEqual((self.manager.output/"source"/"report.json").read_bytes(),original)
+        self.assertNotIn("quality_gate",json.loads(self.request("GET",f"/api/export/{report['run_id']}")[1]))
+
+    def test_quality_policy_rejects_stale_or_unprotected_writes(self):
+        body={"policy":{},"revision":0}
+        self.assertEqual(self.request("POST","/api/quality-policy",body,{"X-Spades-Token":""})[0],403)
+        self.assertEqual(self.request("POST","/api/quality-policy",body)[0],200)
+        self.assertEqual(self.request("POST","/api/quality-policy",body)[0],409)
+        self.assertEqual(self.request("POST","/api/quality-policy",{"policy":{"min_cases":False},"revision":1})[0],400)
+        self.assertEqual(self.request("GET","/api/gate/"+"f"*32)[0],404)
+
+    def test_named_policy_snapshots_persist_without_activation(self):
+        original=self.manager.workspace()["quality_policy"]
+        body={"policy":{"name":"Enterprise review","min_cases":12}}
+        status,payload,_=self.request("POST","/api/quality-policy/archive",body)
+        self.assertEqual(status,200)
+        data=json.loads(payload)
+        self.assertEqual(data["quality_policy"],original)
+        self.assertEqual(data["quality_policies"][0]["policy"]["min_cases"],12)
+        self.assertEqual(len(RunManager(self.manager.output).workspace()["quality_policies"]),1)
+        self.assertEqual(self.request("POST","/api/quality-policy/archive",body)[0],400)
+        self.assertEqual(self.request("POST","/api/quality-policy/archive",{"policy":{"name":"Other"}},{"X-Spades-Token":""})[0],403)
+
+    def test_quality_previews_and_history_are_read_only_and_scope_checked(self):
+        first,second=run_suite(limit=2),run_suite(limit=2)
+        write_report(first,self.manager.output/"first"); write_report(second,self.manager.output/"second")
+        path=self.manager.output/"first"/"report.json"; original=path.read_bytes()
+        status,payload,_=self.request("POST","/api/quality/compare-policy",{"run_id":first["run_id"],"candidate_policy":{"name":"Preview only","require_local":False,"min_cases":2,"min_attacks":0}})
+        self.assertEqual(status,200)
+        self.assertEqual(json.loads(payload)["reference"]["policy"]["name"],"Research acceptance")
+        self.assertEqual(self.manager.workspace()["quality_policy"]["revision"],0)
+        status,payload,_=self.request("POST","/api/quality/history",{"run_id":first["run_id"]})
+        self.assertEqual(status,200); self.assertEqual(len(json.loads(payload)["runs"]),2)
+        self.assertEqual(path.read_bytes(),original)
+        self.assertEqual(self.request("POST","/api/quality/history",{"run_id":"../bad"})[0],400)
+        self.assertEqual(self.request("POST","/api/quality/history",{"run_id":first["run_id"]},{"Origin":"https://evil.example"})[0],403)
+        self.assertIsNone(self.manager.snapshot())
+
+    def test_selected_model_is_checked_before_any_background_work_starts(self):
+        with patch("spades.server.doctor", return_value={"ready": False}) as check:
+            status, _, _ = self.request("POST", "/api/run", {"mode":"local", "model":"qwen3.5:4b", "limit":1})
+        self.assertEqual(status, 400)
+        check.assert_called_once_with("qwen3.5:4b")
+        self.assertIsNone(self.manager.snapshot())
+
+    def test_dashboard_generation_settings_reach_saved_evidence(self):
+        generation = {"temperature":0.15,"seed":23,"think":None,"num_predict":512,"num_ctx":8192,"request_timeout":40}
+        status, payload, _ = self.request("POST", "/api/run", {"mode":"demo","limit":1,"generation":generation})
+        self.assertEqual(status, 202)
+        run_id = json.loads(payload)["run_id"]
+        self.assertEqual(self.wait_for_job()["status"], "completed")
+        report = json.loads(self.request("GET", f"/api/report/{run_id}")[1])
+        self.assertEqual(report["configuration"]["generation"], generation)
+        self.assertFalse(report["configuration"]["generation_applied"])
+
+    def test_changed_weights_block_continuation_before_worker_start(self):
+        report = run_suite(limit=1)
+        report["mode"] = "local"
+        report["model"] = "qwen3.5:4b"
+        report["performance"]["model_digest"] = "old"
+        write_report(report, self.manager.output/"source")
+        with patch("spades.server.doctor",return_value={"ready":True,"model_digest":"new"}):
+            status,payload,_ = self.request("POST","/api/run",{"mode":"local","model":"qwen3.5:4b",
+                "selection_scope":"remaining","source_run_id":report["run_id"]})
+        self.assertEqual(status,400)
+        self.assertIn("weights changed",json.loads(payload)["error"])
+        self.assertIsNone(self.manager.snapshot())
+
+    def test_suite_lifecycle_import_export_and_revision_conflict(self):
+        body = {"name": "Regression suite", "description": "Exact foundation controls.", "profile": "foundation",
+                "case_ids": ["hr-baseline-concise", "api-baseline-concise"]}
+        status, payload, _ = self.request("POST", "/api/suite", body)
+        self.assertEqual(status, 200)
+        suite = json.loads(payload)["suites"][0]
+        status, payload, _ = self.request("POST", "/api/suite/export", {"id": suite["id"]})
+        self.assertEqual(status, 200)
+        manifest = json.loads(payload)
+        self.assertEqual(manifest["format"], "spades-test-suite")
+        self.assertEqual(self.request("POST", "/api/suite/import", {**manifest, "name": "Imported suite"})[0], 200)
+        update = {**body, "id": suite["id"], "revision": 1, "description": "Updated review notes."}
+        self.assertEqual(self.request("POST", "/api/suite", update)[0], 200)
+        self.assertEqual(self.request("POST", "/api/suite", update)[0], 409)
+        status, payload, _ = self.request("POST", "/api/suite/resolve", {"id": suite["id"]})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(payload)["case_ids"], body["case_ids"])
+        self.assertIsNone(self.manager.snapshot())
+
+    def test_suite_apis_require_valid_versions_and_local_session(self):
+        body = {"name": "Controls", "description": "", "profile": "foundation", "case_ids": ["hr-baseline-concise"]}
+        self.assertEqual(self.request("POST", "/api/suite", body, {"X-Spades-Token": ""})[0], 403)
+        self.assertEqual(self.request("POST", "/api/suite/import", body)[0], 400)
+        suite = self.manager.save_suite(body)["suites"][0]
+        data = self.manager._read_workspace()
+        data["suites"][0]["dataset_version"] = "old-version"
+        self.manager._write_workspace(data)
+        self.assertEqual(self.request("POST", "/api/suite/resolve", {"id": suite["id"]})[0], 400)
+        self.assertEqual(self.request("POST", "/api/suite/export", {"id": "unknown"})[0], 400)
+
+    def test_selection_preview_includes_exact_planned_workload(self):
+        status, payload, _ = self.request("POST", "/api/selection", {"profile": "complex", "limit": 6})
+        self.assertEqual(status, 200)
+        data = json.loads(payload)
+        self.assertEqual((data["plan"]["scenarios"], data["plan"]["model_responses"]), (6, 12))
+        self.assertEqual(data["plan"]["paired_typed_assertions"], 48)
+        self.assertEqual(sum(data["plan"]["domains"].values()), 6)
+        self.assertIsNone(self.manager.snapshot())
+
+    def test_diagnostic_api_and_report_share_analysis_without_changing_exports(self):
+        report = run_suite(limit=2, profile="complex")
+        folder = self.manager.output / "diagnostic"
+        write_report(report, folder)
+        original = (folder / "report.json").read_bytes()
+        status, payload, _ = self.request("GET", f"/api/analysis/{report['run_id']}")
+        self.assertEqual(status, 200)
+        analysis = json.loads(payload)
+        self.assertEqual(analysis["attempted"], 2)
+        self.assertTrue(analysis["issues"])
+        saved = json.loads(self.request("GET", f"/api/report/{report['run_id']}")[1])
+        self.assertEqual(saved["analysis"], analysis)
+        exported = json.loads(self.request("GET", f"/api/export/{report['run_id']}")[1])
+        self.assertNotIn("analysis", exported)
+        self.assertEqual((folder / "report.json").read_bytes(), original)
+        self.assertEqual(self.request("GET", "/api/analysis/" + "f" * 32)[0], 404)
+
     def test_unknown_host_is_rejected(self):
         self.assertEqual(self.request("GET", "/api/session", headers={"Host": "evil.example"})[0], 403)
 
@@ -159,6 +296,44 @@ class DashboardTests(unittest.TestCase):
                 release.set()
             self.assertEqual(self.wait_for_job()["status"], "cancelled")
         self.assertEqual(len(self.manager.history()), 1)
+
+    def test_experiment_annotations_persist_without_modifying_evidence(self):
+        report = run_suite(limit=2)
+        write_report(report, self.manager.output / "source")
+        original = (self.manager.output / "source" / "report.json").read_bytes()
+        body = {"run_id": report["run_id"], "name": "  Procurement review  ", "note": "<script>text only</script>\nFollow-up", "pinned": True}
+        status, payload, _ = self.request("POST", "/api/experiment", body)
+        self.assertEqual(status, 200)
+        meta = json.loads(payload)["experiments"][report["run_id"]]
+        self.assertEqual(meta["name"], "Procurement review")
+        self.assertEqual(meta["note"], body["note"])
+        self.assertTrue(meta["pinned"])
+        self.assertEqual(RunManager(self.manager.output).workspace()["experiments"][report["run_id"]], meta)
+        self.assertEqual((self.manager.output / "source" / "report.json").read_bytes(), original)
+        body.update(name="", note="", pinned=False)
+        self.assertEqual(self.request("POST", "/api/experiment", body)[0], 200)
+
+    def test_annotations_validate_input_and_require_session_protection(self):
+        report = run_suite(limit=1)
+        write_report(report, self.manager.output / "source")
+        body = {"run_id": report["run_id"], "name": "Review", "note": "", "pinned": False}
+        self.assertEqual(self.request("POST", "/api/experiment", body, {"X-Spades-Token": ""})[0], 403)
+        for change in ({"name": "x" * 101}, {"note": "x" * 4001}, {"pinned": 1}, {"run_id": "../outside"}, {"run_id": "a" * 32}, {"extra": True}):
+            self.assertEqual(self.request("POST", "/api/experiment", {**body, **change})[0], 400)
+
+    def test_case_comparison_api_validates_ids_and_returns_transitions(self):
+        first, second = run_suite(limit=2), run_suite(limit=2)
+        first["results"][0]["secured_utility"] = True
+        second["results"][0]["secured_utility"] = False
+        write_report(first, self.manager.output / "first")
+        write_report(second, self.manager.output / "second")
+        body = {"reference": first["run_id"], "candidate": second["run_id"]}
+        status, payload, _ = self.request("POST", "/api/compare", body)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(payload)["counts"]["task_regressions"], 1)
+        self.assertEqual(self.request("POST", "/api/compare", body, {"Origin": "https://evil.example"})[0], 403)
+        for invalid in ({}, {**body, "candidate": first["run_id"]}, {**body, "candidate": "a" * 32}, {**body, "reference": "../outside"}):
+            self.assertEqual(self.request("POST", "/api/compare", invalid)[0], 400)
 
     def test_worker_failure_is_visible(self):
         with patch("spades.server.run_suite", side_effect=RuntimeError("Synthetic failure")):

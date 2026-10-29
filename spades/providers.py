@@ -9,6 +9,7 @@ import threading
 from collections import Counter
 from .core import Chunk
 from .cache import EmbeddingCache, valid_vector
+from .settings import validate_generation, validate_model
 
 _CHROMA_INIT_LOCK = threading.Lock()
 
@@ -16,19 +17,39 @@ _CHROMA_INIT_LOCK = threading.Lock()
 class Ollama:
     base_url = "http://127.0.0.1:11434"
 
-    def __init__(self, model="qwen2.5:7b-instruct-q4_K_M", embedding_model="nomic-embed-text", cache_path=None):
-        self.model, self.embedding_model = model, embedding_model
+    def __init__(self, model="qwen2.5:7b-instruct-q4_K_M", embedding_model="nomic-embed-text", cache_path=None, generation=None):
+        self.model, self.embedding_model = validate_model(model), embedding_model
+        self.request_timeout = validate_generation(generation)["request_timeout"]
+        self.generation = dict(generation or {})
         self.cache = EmbeddingCache(cache_path) if cache_path else None
         self._embedding_digest = None
         self._digest_checked = False
         self._embedding_lock = threading.Lock()
         self._stats_lock = threading.Lock()
+        self._registry_lock = threading.Lock()
+        self._model_registry = None
+        self._model_digest = None
+        self._answer_state = threading.local()
         self._stats = {"embedding_cache_hits": 0, "embedding_cache_misses": 0, "embedding_requests": 0,
                        "chat_requests": 0, "model_load_seconds": 0.0, "generated_tokens": 0}
 
     def statistics(self):
         with self._stats_lock:
-            return {**self._stats, "embedding_cache_enabled": self.cache is not None and self._embedding_digest is not None}
+            return {**self._stats, "embedding_cache_enabled": self.cache is not None and self._embedding_digest is not None,
+                    "model_digest": self._model_digest}
+
+    def _require_local_weights(self, model):
+        with self._registry_lock:
+            if self._model_registry is None:
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                with opener.open(self.base_url + "/api/tags", timeout=min(4, self.request_timeout)) as response:
+                    self._model_registry = json.load(response)["models"]
+            record = next((item for item in self._model_registry if item.get("name") in (model, model + ":latest")), None)
+            if (not record or record.get("remote_host") or record.get("remote_model")
+                    or type(record.get("size")) is not int or record["size"] <= 0):
+                raise ValueError("Spades requires installed local weights; remote-routed or unavailable models cannot be used")
+            if model == self.model:
+                self._model_digest = record.get("digest")
 
     def _fingerprint(self):
         if self._digest_checked:
@@ -46,12 +67,14 @@ class Ollama:
         return self._embedding_digest
 
     def request(self, endpoint, payload):
+        if endpoint in ("/api/chat", "/api/embed"):
+            self._require_local_weights(payload["model"])
         request = urllib.request.Request(self.base_url + endpoint,
                                          json.dumps(payload).encode(),
                                          {"Content-Type": "application/json"})
         # Ignore ambient proxy configuration; local data stays on loopback.
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open(request, timeout=180) as response:
+        with opener.open(request, timeout=self.request_timeout) as response:
             data = json.load(response)
         with self._stats_lock:
             self._stats["chat_requests" if endpoint == "/api/chat" else "embedding_requests"] += 1
@@ -98,15 +121,29 @@ class Ollama:
                        "Use true/false for booleans and numbers without currency symbols for numeric fields. "
                        "Field names ending _utc require ISO 8601 UTC timestamps. Never put the JSON inside prose.")
         context = json.dumps([{"source": c.source_id, "chunk": c.chunk_id, "text": c.text} for c in chunks])
+        options = validate_generation(self.generation, "complex" if schema else "foundation")
+        options.pop("request_timeout")
+        think = options.pop("think")
+        if options["seed"] is None:
+            options.pop("seed")
         payload = {
-            "model": self.model, "stream": False, "keep_alive": "30m", "options": {"temperature": 0, "num_predict": 1400 if schema else 350,
-                                                               "num_ctx": 16384 if schema else 4096},
+            "model": self.model, "stream": False, "keep_alive": "30m", "options": options,
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": f"Documents (JSON):\n{context}\nQuestion: {query}"}],
         }
         if schema:
             payload["format"] = schema
-        return self.request("/api/chat", payload)["message"]["content"]
+        if think is not None:
+            payload["think"] = think
+        result = self.request("/api/chat", payload)
+        content = result["message"]["content"]
+        self._answer_state.metadata = {"done_reason": result.get("done_reason"), "generated_tokens": result.get("eval_count"),
+            "prompt_tokens": result.get("prompt_eval_count"), "empty_response": not content.strip(),
+            "thinking_characters": len(result["message"].get("thinking") or "")}
+        return content
+
+    def response_metadata(self):
+        return dict(getattr(self._answer_state, "metadata", {}))
 
 
 class DemoModel:
