@@ -47,9 +47,9 @@ Diagnostics are observations about recorded evidence. They do not replace semant
 
 ## Curate reusable test suites
 
-**Test suites** preserve an exact ordered selection of built-in scenarios, independently of model execution and defense settings. In **New experiment**, choose a sample, filter cases or select exact scenarios, then use **Save selection as a test suite**. The current selection is resolved before saving: a sampled or continuation-based selection becomes a fixed set of IDs. Add a name and purpose, review the membership, then save without running inference.
+**Test suites** preserve an exact ordered selection of built-in or authored scenarios, independently of model execution and defense settings. In **New experiment**, choose a sample, filter cases or select exact scenarios, then use **Save selection as a test suite**. The current selection is resolved before saving: a sampled or continuation-based selection becomes a fixed set of IDs. Add a name and purpose, review the membership, then save without running inference.
 
-Each saved suite records its profile, dataset/grading versions, creation/update times and revision. Use the suite library to search names, descriptions and scenario IDs, inspect membership, edit notes or IDs, and configure an experiment. Edits increment the revision; a stale browser edit is rejected rather than overwriting a newer revision. Existing experiment reports retain their original case selections. Suite revisions track updates to the current definition; they are not a browsable archive of earlier definitions.
+Each saved suite records its profile, dataset/grading versions, creation/update times and revision. Use the suite library to search names, descriptions and scenario IDs, inspect membership, edit notes or IDs, and configure an experiment. Edits increment the revision; a stale browser edit is rejected rather than overwriting a newer revision. Existing experiment reports retain their original case selections. Use **Revision history** to inspect full archived definitions, compare added/removed/reordered scenarios and authored-content changes, and restore an older definition as a new revision. Restores use optimistic revision checks and preserve previous evidence. Definitions predating archiving are shown as unavailable; they are never reconstructed.
 
 **Export suite** downloads a portable version-1 JSON manifest containing only the suite description, profile, scenario IDs and compatibility versions. **Import a suite manifest** opens a review editor before saving. Imports reject incompatible dataset/grading versions, unknown or duplicate scenario IDs, mixed profiles and unknown options. Rename an import when its name already exists. Importing never installs code, modifies source fixtures or launches inference. Suite definitions and experiment annotations are local workspace data in `output/workspace.json` and are excluded from Git by default.
 
@@ -185,6 +185,48 @@ Runtime errors are excluded from rate denominators and counted separately. N/A d
 
 These checks evaluate declared fields and source references. They do not establish semantic correctness of every explanatory statement or prove that a citation supports every claim. Historical foundation results use the older substring grader; [the foundation evidence record](docs/RESULTS.md) remains available for its original scope.
 
+## Scenario studio and document ingestion
+
+Use **Scenario studio** to define analytical tasks, 1–40 source records, 1–30 independent typed reference fields, required citations, retrieval facets, clearance and explicit adversarial attachments. Numeric assertions support absolute tolerances. Reference answers stay outside model requests. Select one or several authored scenarios to configure a selective experiment, save a portable frozen suite or create a campaign. Each saved scenario retains complete revision history; restoring creates another revision.
+
+Import local TXT, Markdown, CSV, DOCX or text-based PDF files, review the extracted text, then add it as a source. Original-byte SHA-256 provenance accompanies imported records. Files are limited to 4 MiB and extracted text to 250,000 characters. PDF requires `pip install -e ".[local,documents]"`; PDF parsing runs with time and memory bounds and does not perform OCR. Imports do not establish document trust or scoring references automatically. See [authoring and ingestion](docs/AUTHORING.md).
+
+## Campaigns and repeated trials
+
+Use **Campaigns** to freeze the current scenario selection or a suite, choose installed models and defense policies, and enter explicit trial seeds. Preview the scenario count and paired response workload before starting. The persistent queue runs trial jobs sequentially; each job uses the existing bounded asynchronous scenario workers. Cancel an individual job or the remaining campaign, explicitly retry a failed/interrupted attempt, or resume queued work after restart. Restart never silently launches inference. Up to 100 trial jobs and 20 distinct seeds are supported.
+
+Reliability summaries group the same configuration across seeds, show full-trial and per-case pass frequencies, and provide descriptive 95% Wilson intervals. Incomplete or erroneous trials are excluded with reasons. Retries preserve prior attempts and contribute only their latest attempt. Different seeds do not establish statistical independence; simulator repetitions do not measure language-model reliability. See [campaign execution and reliability](docs/CAMPAIGNS.md).
+
+Result comparisons now include changed typed values and pass states, reference-contract changes, added/removed/missing/invalid citations, retrieval changes and allow/block/sanitization changes. Filter by fields or evidence and inspect both original case records. A partial field regression remains visible even when the overall task outcome is unchanged.
+
+## Campaign parameter sweeps
+
+In **Campaigns**, expand **Parameter sweeps** to enter optional comma-separated trust thresholds (0–1), retrieval depths (whole numbers 1–50) and temperatures (0–2). Blank axes inherit the base setting. Each axis supports up to ten distinct values; the complete product of models, defenses, seeds and parameter values is limited to 100 trial jobs. The server rejects oversized or invalid matrices before creating jobs.
+
+**Preview campaign workload** validates the entire matrix without creating a campaign or making model calls. It shows all parameter values, the fixed scenario count, trial count and paired-response workload; expand the preview to inspect every planned configuration. The dashboard submits the preview's exact scenario IDs and definitions when you start it. Actual runtime model readiness is checked when each trial starts.
+
+Saved trials record their own trust threshold, retrieval depth, temperature and seed. **Configuration comparison** groups matching settings across seeds and shows complete/planned trials, task pass rates and descriptive intervals. Different parameter combinations remain separate; retries still count only their latest attempt. The full campaign export includes each job configuration and result group. Temperature does not affect demonstration responses, and simulator sweeps do not establish language-model performance.
+
+## Coverage planning and focused follow-up
+
+Open **Coverage planner** to find gaps across the full foundation/enterprise library, a saved suite or the current selection. **Use displayed experiment** restores the scenario scope and settings from the report selected in Overview. Choose unseen scenarios, failures/errors or all cases, and set a maximum scenario budget from 1 to 100.
+
+Coverage uses the latest compatible saved observation per scenario. Matching includes mode, model name, dataset/grading identity, defense policy, trust threshold, retrieval depth and local generation settings (seeds may differ). Local results are restricted to the newest observed model weight identity; the planner does not contact Ollama or verify current installed weights. Different or unrecorded settings are listed as exclusions. Demonstration observations remain separate from local-model evidence. Completed cases from partial runs count; runtime errors and missing assessments do not count as measured coverage.
+
+Review domain and family coverage, filter by status, or search failed field names. Suggestions prioritize disclosed data and attack matches, task failures, runtime errors, unmeasured cases, unseen cases and passes. Equal-priority suggestions spread across domains/families. Adjust checkboxes within the budget, inspect original case evidence, then choose **Configure selected follow-up**. Review the exact selection before running, saving it as a suite or using it in a campaign. The budget bounds scenarios and paired responses, not elapsed time or tokens.
+
+**Export coverage evidence** downloads the snapshot, exclusions, suggested IDs, operator-selected IDs and an execution configuration for the current selection. Planning does not launch inference or rewrite evidence. Coverage summaries describe latest observations; they are not aggregate benchmark or reliability estimates.
+
+## Evidence investigations
+
+Open **Investigations** to search saved case observations across experiments. Literal text search covers scenario IDs, tasks, vulnerable/secured responses, grading data and retrieved source text. Combine execution mode, profile, exact model/domain, defense, scenario family, diagnostic finding and inclusive UTC start-date filters. Filter for failed fields, citation problems, missing or blocked sources, runtime failures, empty answers, attack matches or clear cases.
+
+Results retain their original run, mode, model, configuration, dataset/grading versions and available weight digest. Inspect failed-field references and source-delivery traces, then use **Open original case evidence** for the full record and existing bookmark/review controls. Repeated scenario IDs in separate runs remain separate observations. Counts cover all matching observations and overlapping findings; they do not combine model performance across configurations.
+
+Search results are paginated in groups of 25. **Export displayed page** saves only that page, alongside total matches, filters, offset and snapshot time, so a partial export is explicit. Changing filters invalidates the displayed snapshot. Search reads saved data without inference or evidence mutation.
+
+Name and save an investigation to retain its filters. Reopening a view loads those filters; run the search again for current evidence. Updates use revision checks to reject stale edits, and up to 100 uniquely named views are supported. **Save as new view** creates a separate named filter set. Saved views store neither copied reports nor fixed result lists.
+
 ## Runtime preparation
 
 On a fresh machine, install Python 3.10+ and Ollama, start Ollama, then:
@@ -223,6 +265,6 @@ The dashboard binds to loopback and enforces Host validation, exact-origin POSTs
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-The Python suite contains 164 software tests, including independent arithmetic references, typing/format failures, citation validation, attack discussion versus adoption, canary disclosure, adaptive chunk integrity, hybrid retrieval, profile dispatch, selective assessment retests, persistent experiment annotations, case-level comparisons, source-delivery diagnostics, denominator correctness, portable test-suite validation, revision conflicts, run planning, generation controls, completion-metadata isolation, local-weight enforcement, acceptance-policy evaluation, automation exit codes, named-policy persistence, policy previews, compatible chronological histories and protected dashboard APIs. Eight additional JavaScript tests verify comparison filters/exports and runtime-view initialization; run them with `node --test tests/test_comparison_view.cjs tests/test_runtime_view.cjs` when Node.js is available. Node.js is used only for these frontend tests and is not required to run Spades. Read [verification](docs/VERIFICATION.md).
+The Python suite contains 226 software tests, including independent arithmetic references, typing/format failures, citation validation, attack discussion versus adoption, canary disclosure, adaptive chunk integrity, hybrid retrieval, profile dispatch, selective assessment retests, persistent experiment annotations, case-level comparisons, source-delivery diagnostics, denominator correctness, portable test-suite validation, revision conflicts, run planning, generation controls, completion-metadata isolation, local-weight enforcement, acceptance-policy evaluation, automation exit codes, named-policy persistence, policy previews, compatible chronological histories and protected dashboard APIs. Twelve additional JavaScript tests verify comparison filters/exports, runtime-view initialization and parameter-sweep parsing/counts; run them with `node --test tests/test_comparison_view.cjs tests/test_runtime_view.cjs tests/test_campaign_matrix.cjs` when Node.js is available. Node.js is used only for these frontend tests and is not required to run Spades. Read [verification](docs/VERIFICATION.md).
 
 `complex_corpus.py` defines enterprise records, task facets, output schemas and independent reference assertions. `grading.py` evaluates typed responses. `evaluation.py` orchestrates paired cases and context budgets. `providers.py` contains local model and retrieval adapters. `server.py` and `web/` provide the dashboard and durable workspace controls.

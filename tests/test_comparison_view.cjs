@@ -11,6 +11,15 @@ const cases = [
 ];
 const ids = rows => rows.map(row => row.case_id);
 
+test('partial field changes and citation changes remain discoverable when the whole task is unchanged', () => {
+  const rows=[{case_id:'custom-budget',task:'unchanged',attack:'not applicable',field_changes:[{field:'annual_total',change:'regressed'}]},
+    {case_id:'custom-citations',task:'unchanged',attack:'unchanged',citation_changes:{changed:true},decision_changes:[]}];
+  assert.deepEqual(ids(filterComparisonCases(rows,'regressions')),['custom-budget']);
+  assert.deepEqual(ids(filterComparisonCases(rows,'fields','annual_total')),['custom-budget']);
+  assert.deepEqual(ids(filterComparisonCases(rows,'evidence')),['custom-citations']);
+  assert.equal(filterComparisonCases(rows).length,2);
+});
+
 test('changed view includes improvements and regressions but excludes unmeasured cases', () => {
   assert.deepEqual(ids(filterComparisonCases(cases)), ['hr-2','api-1','api-2']);
   assert.deepEqual(ids(filterComparisonCases(cases,'unmeasured')), ['hr-3']);

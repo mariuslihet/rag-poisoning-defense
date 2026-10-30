@@ -58,8 +58,17 @@ def fact_present(answer, expected):
     return bool(re.search(rf"\b{number.group()}\s*{unit}\b", normalized, re.IGNORECASE))
 
 
-def select_cases(category=None, limit=None, profile="foundation", domain=None, case_ids=None, exclude_ids=None):
-    cases = [c for c in build_suite(profile) if (category is None or c.category == category)
+def select_cases(category=None, limit=None, profile="foundation", domain=None, case_ids=None, exclude_ids=None, case_definitions=None):
+    if case_definitions is not None:
+        from .authoring import validate_definition, definition_to_case
+        if profile != "complex" or not isinstance(case_definitions, list) or not 1 <= len(case_definitions) <= 100:
+            raise ValueError("Custom evaluations require 1–100 enterprise scenario definitions")
+        available_cases = [definition_to_case(validate_definition(definition)) for definition in case_definitions]
+        if len({case.case_id for case in available_cases}) != len(available_cases):
+            raise ValueError("Custom scenario IDs must be unique")
+    else:
+        available_cases = build_suite(profile)
+    cases = [c for c in available_cases if (category is None or c.category == category)
              and (domain is None or (c.domain or c.case_id.split('-')[0]) == domain)]
     if case_ids is not None:
         if not isinstance(case_ids, list) or not case_ids or not all(isinstance(i, str) for i in case_ids) or len(case_ids) > 500 or len(set(case_ids)) != len(case_ids):
@@ -200,7 +209,9 @@ def evaluate_case(case, provider, mode, threshold, k, output, run_id, policy, st
 
 def make_report(results, suite, provider, mode, threshold, k, run_id, policy, profile, started_at,
                 status, wall_started, concurrency, domain, case_ids, selection_scope,
-                previous_case_ids, source_run_id, category=None, limit=None, generation=None):
+                previous_case_ids, source_run_id, category=None, limit=None, generation=None, case_definitions=None):
+    from .datasets import dataset_identity
+    dataset_version, grading_version = dataset_identity(profile, case_definitions)
     grouped = defaultdict(list)
     for row in results:
         grouped[row["category"]].append(row)
@@ -210,12 +221,12 @@ def make_report(results, suite, provider, mode, threshold, k, run_id, policy, pr
             "planned_cases": len(suite), "planned_case_ids": [case.case_id for case in suite], "mode": mode,
             "model": "deterministic simulator" if mode == "demo" else provider.model,
             "retrieval": "lexical cosine" if mode == "demo" else "ChromaDB / nomic-embed-text",
-            "configuration": {"trust_threshold": threshold, "retrieval_k": k, "clearance": 1 if profile == "complex" else 0,
-                              "category": category, "limit": limit, "dataset_version": "enterprise-1.1" if profile == "complex" else "0.2", "policy": policy,
+            "configuration": {"trust_threshold": threshold, "retrieval_k": k, "clearance": "per-scenario" if case_definitions is not None else 1 if profile == "complex" else 0,
+                              "category": category, "limit": limit, "dataset_version": dataset_version, "policy": policy,
                               "retrieval_method": "dense-bm25-fusion" if profile == "complex" else "single-query",
                               "concurrency": concurrency, "domain": domain, "case_ids": case_ids, "selection_scope": selection_scope,
                               "previous_case_ids": previous_case_ids or [], "source_run_id": source_run_id,
-                              "profile": profile, "grading_version": "typed-rubric-2" if profile == "complex" else "substring-2",
+                              "profile": profile, "grading_version": grading_version, "case_definitions": case_definitions,
                               "generation": generation, "generation_applied": mode == "local"},
             "metrics": summarize(results), "categories": {name: summarize(rows) for name, rows in grouped.items()},
             "limitations": ["Demo scores describe a deterministic simulator, not an LLM.",
@@ -236,7 +247,7 @@ async def run_suite_async(mode="demo", threshold=0.7, k=5, output=Path("output")
                           policy="strict", profile="foundation", concurrency=2, domain=None,
                           case_ids=None, exclude_ids=None, checkpoint=None, activity=None,
                           cache_path=None, selection_scope="sample", previous_case_ids=None,
-                          source_run_id=None, generation=None):
+                          source_run_id=None, generation=None, case_definitions=None):
     if mode not in ("demo", "local") or type(k) is not int or not 1 <= k <= 50:
         raise ValueError("Select demo/local mode and retrieval depth 1–50")
     if not 0 <= threshold <= 1 or policy not in ("strict", "sanitize"):
@@ -248,12 +259,17 @@ async def run_suite_async(mode="demo", threshold=0.7, k=5, output=Path("output")
     from .settings import validate_generation, validate_model, DEFAULT_MODEL
     generation = validate_generation(generation, profile)
     model = validate_model(model or DEFAULT_MODEL)
+    if case_definitions is not None:
+        from .authoring import validate_definition
+        if not isinstance(case_definitions, list) or not 1 <= len(case_definitions) <= 100:
+            raise ValueError("Provide 1–100 authored scenario definitions")
+        case_definitions = [validate_definition(item) for item in case_definitions]
     output = Path(output)
     provider = (Ollama(model=model or "qwen2.5:7b-instruct-q4_K_M",
                        cache_path=cache_path or output / ".cache" / "embeddings.sqlite3", generation=generation)
                 if mode == "local" else DemoModel())
     run_id = run_id or uuid.uuid4().hex
-    suite = select_cases(category, limit, profile, domain, case_ids, exclude_ids)
+    suite = select_cases(category, limit, profile, domain, case_ids, exclude_ids, case_definitions)
     started_at = datetime.now(timezone.utc).isoformat()
     wall_started = time.perf_counter()
     rows, active = {}, {}
@@ -274,7 +290,7 @@ async def run_suite_async(mode="demo", threshold=0.7, k=5, output=Path("output")
     def report(status):
         return make_report([rows[i] for i in sorted(rows)], suite, provider, mode, threshold, k,
                            run_id, policy, profile, started_at, status, wall_started, concurrency,
-                           domain, case_ids, selection_scope, previous_case_ids, source_run_id, category, limit, generation)
+                           domain, case_ids, selection_scope, previous_case_ids, source_run_id, category, limit, generation, case_definitions)
 
     async def worker():
         while not queue.empty() and not (cancelled and cancelled()):

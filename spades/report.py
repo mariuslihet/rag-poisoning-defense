@@ -4,6 +4,7 @@ import html
 import csv
 import io
 import json
+import time
 from pathlib import Path
 
 
@@ -32,7 +33,16 @@ def write_checkpoint(report, output: Path):
     output.mkdir(parents=True, exist_ok=True)
     temporary = output / "report.json.tmp"
     temporary.write_text(json.dumps(report, indent=2, allow_nan=False), encoding="utf-8")
-    temporary.replace(output / "report.json")
+    # Windows readers can briefly hold a handle without delete sharing. Keep the
+    # old complete checkpoint available and retry the atomic rename, never truncate it.
+    for attempt in range(7):
+        try:
+            temporary.replace(output / "report.json")
+            break
+        except PermissionError:
+            if attempt == 6:
+                raise
+            time.sleep(.01 * (2 ** attempt))
 
 
 def write_report(report, output: Path):

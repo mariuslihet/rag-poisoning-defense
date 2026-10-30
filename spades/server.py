@@ -19,7 +19,8 @@ from .runtime import DEFAULT_MODEL, doctor
 from .complex_corpus import PROFILES
 from .comparison import compare_cases
 from .analysis import analyze_report
-from .suites import validate_suite, export_suite, plan_cases
+from .suites import validate_suite, export_suite, plan_cases, compare_suite_revisions
+from .datasets import dataset_identity
 from .settings import validate_generation, validate_model
 from .quality import validate_policy, assess_report
 from .quality_history import compare_policies, acceptance_history
@@ -28,11 +29,11 @@ ASSETS = Path(__file__).parent / "web"
 
 
 def validate_config(config):
-    if not isinstance(config, dict) or set(config) - {"mode", "threshold", "k", "limit", "category", "policy", "profile", "domain", "case_ids", "concurrency", "selection_scope", "source_run_id", "model", "generation"}:
+    if not isinstance(config, dict) or set(config) - {"mode", "threshold", "k", "limit", "category", "policy", "profile", "domain", "case_ids", "concurrency", "selection_scope", "source_run_id", "model", "generation", "case_definitions"}:
         raise ValueError("Expected known experiment options")
     result = {"mode": "demo", "threshold": 0.7, "k": 5, "limit": 6, "category": None, "policy": "strict", "profile": "foundation",
               "domain": None, "case_ids": None, "concurrency": 2, "selection_scope": "sample", "source_run_id": None,
-              "model": DEFAULT_MODEL, "generation": None}
+              "model": DEFAULT_MODEL, "generation": None, "case_definitions":None}
     result.update(config)
     if result["category"] == "":
         result["category"] = None
@@ -54,6 +55,11 @@ def validate_config(config):
         raise ValueError("Unknown scenario profile")
     result["model"] = validate_model(result["model"])
     result["generation"] = validate_generation(result["generation"], result["profile"])
+    if result["case_definitions"] is not None:
+        from .authoring import validate_definition
+        if result["profile"] != "complex" or not isinstance(result["case_definitions"],list) or not 1 <= len(result["case_definitions"]) <= 100:
+            raise ValueError("Custom evaluations require 1–100 enterprise scenario definitions")
+        result["case_definitions"]=[validate_definition(definition) for definition in result["case_definitions"]]
     for key, maximum in (("k", 50), ("limit", 500)):
         if type(result[key]) is not int or not 1 <= result[key] <= maximum:
             raise ValueError(f"{key} must be an integer from 1 to {maximum}")
@@ -64,7 +70,7 @@ def validate_config(config):
         raise ValueError("Choose at least one scenario")
     if result["case_ids"] is not None and result["selection_scope"] != "selected":
         raise ValueError("Scenario IDs require Selected scenarios mode")
-    select_cases(result["category"], result["limit"], result["profile"], result["domain"], selected)
+    select_cases(result["category"], result["limit"], result["profile"], result["domain"], selected, case_definitions=result["case_definitions"])
     if result["selection_scope"] in ("remaining", "errors", "failed", "attacks") and not result["source_run_id"]:
         raise ValueError("Choose the previous experiment")
     return result
@@ -88,6 +94,15 @@ class RunManager:
         self.lock = threading.RLock()
         self.cancel_event = threading.Event()
         self.active = None
+        self._campaigns = None
+
+    @property
+    def campaigns(self):
+        from .campaigns import CampaignManager
+        with self.lock:
+            if self._campaigns is None:
+                self._campaigns = CampaignManager(self)
+            return self._campaigns
 
     def snapshot(self):
         with self.lock:
@@ -100,7 +115,8 @@ class RunManager:
         data = json.loads(path.read_text(encoding="utf-8"))
         if (not isinstance(data, dict) or not isinstance(data.get("presets"), list)
                 or not isinstance(data.get("bookmarks"), list) or not isinstance(data.get("experiments", {}), dict)
-                or not isinstance(data.get("suites", []), list) or not isinstance(data.get("quality_policies", []), list)):
+                or not isinstance(data.get("suites", []), list) or not isinstance(data.get("quality_policies", []), list)
+                or not isinstance(data.get("custom_scenarios", []), list) or not isinstance(data.get("investigations", []),list)):
             raise ValueError("Workspace data is invalid; restore output/workspace.json from a backup")
         return data
 
@@ -115,7 +131,43 @@ class RunManager:
             return {"presets": BUILTIN_PRESETS + data["presets"], "bookmarks": data["bookmarks"],
                     "experiments": data.get("experiments", {}), "suites": data.get("suites", []),
                     "quality_policy": data.get("quality_policy", {"policy":validate_policy(), "revision":0, "updated_at":None}),
-                    "quality_policies":data.get("quality_policies",[])}
+                    "quality_policies":data.get("quality_policies",[]), "custom_scenarios":data.get("custom_scenarios",[]),
+                    "investigations":data.get("investigations",[])}
+
+    def save_investigation(self, body):
+        from .investigations import validate_filters
+        if not isinstance(body,dict) or not {"name","filters"}<=set(body) or set(body)-{"name","filters","id","revision"}:
+            raise ValueError("Expected view name, filters and optional saved-view ID/revision")
+        name=body["name"]
+        if not isinstance(name,str) or not 1<=len(name.strip())<=100:
+            raise ValueError("Investigation names must contain 1–100 characters")
+        filters=validate_filters(body["filters"])
+        view_id=body.get("id")
+        if ("id" in body)!=("revision" in body) or ("id" in body and (
+                not isinstance(view_id,str) or not re.fullmatch(r"[a-f0-9]{32}",view_id)
+                or type(body["revision"]) is not int or body["revision"]<1)):
+            raise ValueError("View updates require a valid saved ID and revision")
+        with self.lock:
+            data=self._read_workspace();views=data.setdefault("investigations",[])
+            existing=next((item for item in views if item["id"]==view_id),None)
+            if view_id and existing is None:raise ValueError("Saved investigation not found")
+            if existing and existing["revision"]!=body["revision"]:raise RuntimeError("This view changed. Reopen it before saving.")
+            if any(item["name"].casefold()==name.strip().casefold() and item["id"]!=view_id for item in views):raise ValueError("A saved investigation already uses this name")
+            if not existing and len(views)>=100:raise ValueError("The workspace supports up to 100 investigation views")
+            now=datetime.now(timezone.utc).isoformat()
+            record={"id":view_id or uuid.uuid4().hex,"name":name.strip(),"filters":filters,
+                    "revision":existing["revision"]+1 if existing else 1,"created_at":existing["created_at"] if existing else now,"updated_at":now}
+            data["investigations"]=[item for item in views if item["id"]!=view_id]+[record]
+            self._write_workspace(data)
+            return self.workspace()
+
+    def save_custom_scenario(self, body):
+        from .authoring import save_scenario
+        with self.lock:
+            data=self._read_workspace()
+            save_scenario(data,body)
+            self._write_workspace(data)
+            return self.workspace()
 
     def archive_quality_policy(self, body):
         if not isinstance(body,dict) or set(body)!={"policy"}:
@@ -148,7 +200,7 @@ class RunManager:
             self._write_workspace(data)
             return self.workspace()
 
-    def save_suite(self, body, manifest=False):
+    def save_suite(self, body, manifest=False, restored_from=None):
         validated = validate_suite(body, manifest=manifest)
         suite_id = body.get("id") if not manifest else None
         if not manifest and "id" in body and (not isinstance(suite_id, str) or not re.fullmatch(r"[a-f0-9]{32}", suite_id)):
@@ -166,12 +218,45 @@ class RunManager:
             if not existing and len(suites) >= 200:
                 raise ValueError("The workspace supports up to 200 test suites")
             now = datetime.now(timezone.utc).isoformat()
+            history=list(existing.get("history",[])) if existing else []
+            if existing:
+                if len(history)>=100:
+                    raise ValueError("This suite has 100 archived revisions; export or clone it before another edit")
+                history.append({key:value for key,value in existing.items() if key!="history"})
             record = {**validated, "id": suite_id or uuid.uuid4().hex,
                       "revision": existing["revision"] + 1 if existing else 1,
-                      "created_at": existing["created_at"] if existing else now, "updated_at": now}
+                      "created_at": existing["created_at"] if existing else now, "updated_at": now,"history":history}
+            if restored_from is not None:
+                record["restored_from_revision"]=restored_from
             data["suites"] = [suite for suite in suites if suite["id"] != suite_id] + [record]
             self._write_workspace(data)
             return self.workspace()
+
+    def suite_history(self, suite_id):
+        if not isinstance(suite_id,str) or not re.fullmatch(r"[a-f0-9]{32}",suite_id):
+            raise ValueError("Invalid suite ID")
+        with self.lock:
+            suite=next((item for item in self._read_workspace().get("suites",[]) if item["id"]==suite_id),None)
+            if suite is None:
+                raise ValueError("Saved suite not found")
+            return {"current":{key:value for key,value in suite.items() if key!="history"},"history":suite.get("history",[])}
+
+    def restore_suite(self, body):
+        if not isinstance(body,dict) or set(body)!={"id","revision","expected_revision"} or any(type(body[key]) is not int or body[key]<1 for key in ("revision","expected_revision")):
+            raise ValueError("Expected suite ID, historical revision and current expected revision")
+        with self.lock:
+            revisions=self.suite_history(body["id"])
+            current=revisions["current"]
+            if current["revision"]!=body["expected_revision"]:
+                raise RuntimeError("The suite changed. Reload its history before restoring.")
+            old=next((item for item in revisions["history"] if item["revision"]==body["revision"]),None)
+            if old is None:
+                raise ValueError("That historical suite definition is unavailable")
+            validated=validate_suite(export_suite(old),manifest=True)
+            fields={key:validated[key] for key in ("name","description","profile","case_ids")}
+            if validated.get("case_definitions") is not None:
+                fields["case_definitions"]=validated["case_definitions"]
+            return self.save_suite({**fields,"id":body["id"],"revision":current["revision"]},restored_from=old["revision"])
 
     def save_experiment(self, body):
         if not isinstance(body, dict) or set(body) != {"run_id", "name", "note", "pinned"}:
@@ -296,8 +381,7 @@ class RunManager:
                           and prior.get("policy", "strict") == config["policy"]
                           and (config["mode"] != "local" or (source["model"] == config["model"]
                                and validate_generation(prior.get("generation"), config["profile"]) == config["generation"])))
-            dataset = "enterprise-1.1" if config["profile"] == "complex" else "0.2"
-            grading = "typed-rubric-2" if config["profile"] == "complex" else "substring-2"
+            dataset, grading = dataset_identity(config["profile"],config["case_definitions"])
             if not compatible or prior.get("dataset_version") != dataset or prior.get("grading_version", grading) != grading:
                 raise ValueError("Previous experiment must use the same profile, mode, model, generation settings, trust, retrieval depth and policy")
             # Continuations form a durable lineage. Reopening the original
@@ -340,13 +424,13 @@ class RunManager:
         # Exact-ID selection preserves all IDs, so apply the batch bound after
         # domain/family filtering for report-derived retest scopes.
         if scope in ("errors", "failed", "attacks"):
-            matching = {case.case_id for case in select_cases(config["category"], None, config["profile"], config["domain"])}
+            matching = {case.case_id for case in select_cases(config["category"], None, config["profile"], config["domain"],case_definitions=config["case_definitions"])}
             ids = [case_id for case_id in ids if case_id in matching]
             if not ids:
                 raise ValueError("No retest scenarios match this domain or family")
-            suite = select_cases(profile=config["profile"], case_ids=ids)
+            suite = select_cases(profile=config["profile"], case_ids=ids,case_definitions=config["case_definitions"])
             return config, suite[:maximum], excluded
-        suite = select_cases(config["category"], maximum, config["profile"], config["domain"], ids, excluded)
+        suite = select_cases(config["category"], maximum, config["profile"], config["domain"], ids, excluded,config["case_definitions"])
         return config, suite, excluded
 
     def start(self, raw_config):
@@ -395,7 +479,7 @@ class RunManager:
                                checkpoint=checkpoint, activity=activity,
                                cache_path=self.output / ".cache" / "embeddings.sqlite3",
                                selection_scope=config["selection_scope"], previous_case_ids=previous,
-                               source_run_id=config["source_run_id"], generation=config["generation"])
+                               source_run_id=config["source_run_id"], generation=config["generation"],case_definitions=config["case_definitions"])
             write_report(report, folder)
             with self.lock:
                 self.active["status"] = ("cancelled" if report["status"] == "cancelled" else
@@ -451,6 +535,11 @@ def make_handler(manager):
                       "/app.js": ("app.js", "text/javascript; charset=utf-8"),
                       "/comparison-view.js": ("comparison-view.js", "text/javascript; charset=utf-8"),
                       "/styles.css": ("styles.css", "text/css; charset=utf-8")}
+            assets.update({"/authoring.js":("authoring.js","text/javascript; charset=utf-8"),
+                           "/investigations.js":("investigations.js","text/javascript; charset=utf-8"),
+                           "/campaign-matrix.js":("campaign-matrix.js","text/javascript; charset=utf-8"),
+                           "/coverage.js":("coverage.js","text/javascript; charset=utf-8"),
+                           "/campaigns.js":("campaigns.js","text/javascript; charset=utf-8")})
             if path in assets:
                 name, mime = assets[path]
                 return self._respond(200, (ASSETS / name).read_bytes(), mime)
@@ -467,6 +556,14 @@ def make_handler(manager):
                 return self._respond(200, {"runs": manager.history(), "active": manager.snapshot()})
             if path == "/api/progress":
                 return self._respond(200, {"active": manager.snapshot()})
+            if path == "/api/campaigns":
+                return self._respond(200,{"campaigns":manager.campaigns.list()})
+            campaign_match=re.fullmatch(r"/api/campaign/([a-f0-9]{32})",path)
+            if campaign_match:
+                try:
+                    return self._respond(200,manager.campaigns.get(campaign_match[1]))
+                except ValueError as exc:
+                    return self._respond(404,{"error":str(exc)})
             if path == "/api/corpus":
                 return self._respond(200, {"profiles": PROFILES, "cases": [asdict(case) for profile in PROFILES for case in build_suite(profile)]})
             match = re.fullmatch(r"/api/(report|export|csv|analysis|gate)/([a-f0-9]{32})", path)
@@ -487,34 +584,102 @@ def make_handler(manager):
                     return self._respond(200, record[1], attachment=match[1] == "export")
             return self._respond(404, {"error": "Not found"})
 
-        def do_POST(self):
-            if not self._valid_host():
-                return self._respond(403, {"error": "Invalid local host"})
-            expected_origin = "http://" + self.headers.get("Host", "")
-            if self.headers.get("Origin") != expected_origin:
-                return self._respond(403, {"error": "Same-origin request required"})
-            if not hmac.compare_digest(self.headers.get("X-Spades-Token", "").encode("utf-8"), manager.token.encode("utf-8")):
-                return self._respond(403, {"error": "Invalid session token"})
-            if self.headers.get_content_type() != "application/json":
-                return self._respond(415, {"error": "JSON content required"})
+        def _reject_post(self, status, message):
+            # A close with unread body bytes can reset Windows clients before
+            # they receive the rejection. Drain one bounded small read only;
+            # never parse rejected content or wait through a streaming upload.
             try:
                 length = int(self.headers.get("Content-Length", "0"))
+                if 0 < length <= 16384:
+                    self.connection.settimeout(.25)
+                    self.rfile.read1(length)
+            except (OSError, ValueError):
+                pass
+            return self._respond(status, {"error": message})
+
+        def do_POST(self):
+            if not self._valid_host():
+                return self._reject_post(403, "Invalid local host")
+            expected_origin = "http://" + self.headers.get("Host", "")
+            if self.headers.get("Origin") != expected_origin:
+                return self._reject_post(403, "Same-origin request required")
+            if not hmac.compare_digest(self.headers.get("X-Spades-Token", "").encode("utf-8"), manager.token.encode("utf-8")):
+                return self._reject_post(403, "Invalid session token")
+            if self.headers.get_content_type() != "application/json":
+                return self._reject_post(415, "JSON content required")
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                path = urlsplit(self.path).path
+                large_routes={"/api/campaign/preview","/api/coverage","/api/ingest","/api/scenario","/api/custom/run","/api/custom/selection","/api/suite","/api/suite/import","/api/campaign/create","/api/preset"}
+                maximum=8*1024*1024 if path in large_routes else 8192
                 self.connection.settimeout(5)
-                if not 0 < length <= 8192:
+                if not 0 < length <= maximum:
                     # Drain a small rejected body so Windows can deliver the 413
                     # instead of resetting a socket with unread inbound bytes.
                     if 8192 < length <= 16384:
                         self.rfile.read(length)
-                    return self._respond(413, {"error": "Request body must be 1–8192 bytes"})
+                    return self._respond(413, {"error": f"Request body must be 1–{maximum} bytes"})
                 body = json.loads(self.rfile.read(length))
-                path = urlsplit(self.path).path
-                if path == "/api/selection":
+                if path == "/api/investigation/search":
+                    from .investigations import search_evidence
+                    return self._respond(200,search_evidence([record[1] for record in manager.reports().values()],body))
+                if path == "/api/investigation/view":
+                    return self._respond(200,manager.save_investigation(body))
+                if path == "/api/coverage":
+                    from .coverage import coverage_plan
+                    if not isinstance(body,dict) or set(body)!={"config","focus","budget"}:
+                        raise ValueError("Expected experiment config, coverage focus and scenario budget")
+                    config,cases,_=manager.resolve_selection(body["config"])
+                    return self._respond(200,coverage_plan(config,cases,[record[1] for record in manager.reports().values()],focus=body["focus"],budget=body["budget"]))
+                if path in ("/api/selection","/api/custom/selection"):
                     _, suite, previous = manager.resolve_selection(body)
                     return self._respond(200, {"count": len(suite), "case_ids": [case.case_id for case in suite], "previous_count": len(previous), "model_requests": len(suite) * 2, "plan": plan_cases(suite)})
+                if path == "/api/ingest":
+                    from .ingestion import extract_document
+                    if not isinstance(body,dict) or set(body)!={"filename","data"}:
+                        raise ValueError("Expected a filename and base64 document data")
+                    return self._respond(200,extract_document(body["filename"],body["data"]))
+                if path == "/api/scenario":
+                    return self._respond(200,manager.save_custom_scenario(body))
+                if path == "/api/campaign/create":
+                    return self._respond(202,manager.campaigns.create(body))
+                if path == "/api/campaign/preview":
+                    return self._respond(200,manager.campaigns.preview(body))
+                if path == "/api/campaign/action":
+                    if not isinstance(body,dict) or set(body)-{"id","action","job_id"} or not {"id","action"}<=set(body):
+                        raise ValueError("Expected a campaign ID and known action")
+                    actions={"cancel":manager.campaigns.cancel_campaign,"resume":manager.campaigns.resume,
+                             "cancel_job":manager.campaigns.cancel_job,"retry_job":manager.campaigns.retry_job}
+                    if not isinstance(body["action"],str) or body["action"] not in actions:
+                        raise ValueError("Unknown campaign action")
+                    required={"id","action","job_id"} if body["action"] in ("cancel_job","retry_job") else {"id","action"}
+                    if set(body)!=required:
+                        raise ValueError("Unexpected or missing campaign action fields")
+                    method=actions[body["action"]]
+                    if body["action"] in ("cancel_job","retry_job"):
+                        return self._respond(200,method(body["id"],body.get("job_id")))
+                    return self._respond(200,method(body["id"]))
                 if path == "/api/suite":
                     return self._respond(200, manager.save_suite(body))
                 if path == "/api/suite/import":
                     return self._respond(200, manager.save_suite(body, manifest=True))
+                if path == "/api/suite/history":
+                    if not isinstance(body,dict) or set(body)!={"id"}: raise ValueError("Expected suite ID")
+                    return self._respond(200,manager.suite_history(body["id"]))
+                if path == "/api/suite/restore":
+                    return self._respond(200,manager.restore_suite(body))
+                if path == "/api/suite/compare":
+                    if not isinstance(body,dict) or set(body)!={"id","reference_revision","candidate_revision"}:
+                        raise ValueError("Expected suite ID and two revision numbers")
+                    history=manager.suite_history(body["id"])
+                    versions=history["history"]+[history["current"]]
+                    choices=[]
+                    for key in ("reference_revision","candidate_revision"):
+                        if type(body[key]) is not int: raise ValueError("Revisions must be integers")
+                        item=next((version for version in versions if version["revision"]==body[key]),None)
+                        if item is None: raise ValueError("Requested revision is unavailable")
+                        choices.append(item)
+                    return self._respond(200,compare_suite_revisions(*choices))
                 if path in ("/api/suite/export", "/api/suite/resolve"):
                     if not isinstance(body, dict) or set(body) != {"id"} or not isinstance(body["id"], str):
                         raise ValueError("Choose a saved suite")
@@ -529,7 +694,7 @@ def make_handler(manager):
                     return self._respond(200, manager.remove_preset(body))
                 if path == "/api/bookmark":
                     return self._respond(200, manager.save_bookmark(body))
-                if path == "/api/run":
+                if path in ("/api/run","/api/custom/run"):
                     return self._respond(202, manager.start(body))
                 if path == "/api/stop":
                     return self._respond(200, manager.stop())
@@ -581,4 +746,6 @@ def serve(output=Path("output"), port=8765):
     except KeyboardInterrupt:
         manager.cancel_event.set()
     finally:
+        if manager._campaigns is not None:
+            manager._campaigns.close()
         server.server_close()

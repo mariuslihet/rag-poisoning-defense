@@ -58,7 +58,7 @@ function view(name) {
     node.classList.toggle("selected", selected);
     if (selected) node.setAttribute("aria-current", "page"); else node.removeAttribute("aria-current");
   });
-  $("#breadcrumb").textContent = { overview: "Overview", experiments: "Experiments", corpus: "Scenario library", runtime: "Local runtime", presets: "Presets", bookmarks: "Bookmarks", suites: "Test suites" }[name];
+  $("#breadcrumb").textContent = { overview: "Overview", experiments: "Experiments", corpus: "Scenario library", runtime: "Local runtime", presets: "Presets", bookmarks: "Bookmarks", suites: "Test suites", builder:"Scenario builder", campaigns:"Campaigns", coverage:"Coverage planner", investigations:"Investigations" }[name];
   window.scrollTo({ top: 0, behavior: "instant" });
   if (name === "runtime") refreshRuntime().catch(e => error(e.message));
 }
@@ -525,9 +525,10 @@ async function compareRuns() {
   settingsTable.append(settingsBody); output.append(el("h3", "", "Recorded generation settings"), settingsTable,
     el("p", "small muted", a.mode === "demo" ? "Generation settings are not applied to demonstration responses." : "Review these settings alongside defense differences. A seed is not a guarantee of identical results, and these comparisons do not isolate a causal effect."));
   output.append(el("h3", "", "Case-level changes"), el("p", "small", `${comparison.counts.task_regressions} task regressions · ${comparison.counts.task_improvements} task improvements · ${comparison.counts.new_attack_matches} new attack matches · ${comparison.counts.resolved_attack_matches} resolved matches · ${comparison.counts.unmeasured} unmeasured cases`));
+  if(comparison.field_summary) output.append(el("p","small",`${comparison.field_summary.regressed} field regressions · ${comparison.field_summary.improved} field improvements · ${comparison.field_summary.reference_changes} changed reference assertions. Field counts are distinct from scenario counts.`));
   const controls = el("div", "filters"), scopeLabel = el("label", "", "Show cases"), scope = el("select");
   scope.id = "comparison-scope"; scopeLabel.htmlFor = scope.id;
-  for (const [value, label] of [["changed", "Changed cases"], ["regressions", "Task or attack regressions"], ["improvements", "Task or attack improvements"], ["attacks", "Changed attack outcomes"], ["unmeasured", "Unmeasured cases"], ["all", "All compared cases"]]) {
+  for (const [value, label] of [["changed", "Changed cases"], ["regressions", "Task, field or attack regressions"], ["improvements", "Task, field or attack improvements"], ["attacks", "Changed attack outcomes"], ["fields","Changed answer fields"], ["evidence","Citation or defense changes"], ["unmeasured", "Unmeasured cases"], ["all", "All compared cases"]]) {
     const option = el("option", "", label); option.value = value; scope.append(option);
   }
   scopeLabel.append(scope);
@@ -548,7 +549,7 @@ async function compareRuns() {
   changesBody.replaceChildren();
   const visible = filterComparisonCases(comparison.cases, scope.value, search.value);
   count.textContent = `${visible.length} of ${comparison.cases.length} compared cases shown`;
-  const regressions = visible.filter(item => item.task === "regressed" || item.attack === "new match");
+  const regressions = visible.filter(isComparisonRegression);
   retest.disabled = !regressions.length || Boolean(state.active && ["running", "stopping"].includes(state.active.status));
   for (const item of visible) {
     const row = el("tr"), links = el("td");
@@ -560,6 +561,7 @@ async function compareRuns() {
       });
       links.append(button, document.createTextNode(" "));
     }
+    const inspect=el("button","case-link","Inspect field/source changes"); inspect.addEventListener("click",()=>openComparisonChanges(item,a,b)); links.append(inspect);
     const duration = item.duration_delta_seconds, score = item.secured_field_score_delta;
     row.append(el("td", "", item.case_id), el("td", "", item.task), el("td", "", item.attack),
       el("td", "", duration == null ? "N/A" : `${duration >= 0 ? "+" : ""}${duration.toFixed(2)} s`),
@@ -578,7 +580,7 @@ async function compareRuns() {
   });
   retest.addEventListener("click", () => {
     const cases = filterComparisonCases(comparison.cases, scope.value, search.value)
-      .filter(item => item.task === "regressed" || item.attack === "new match");
+      .filter(isComparisonRegression);
     if (!cases.length) return;
     configureFromRun(b); $("#run-category").value = ""; $("#run-domain").value = "";
     $("#scenario-search").value = ""; $("#run-scope").value = "selected";
@@ -587,6 +589,44 @@ async function compareRuns() {
   });
   renderChanges();
   changes.append(changesBody); const scroll = el("div", "table-scroll"); scroll.append(changes); output.append(scroll);
+}
+
+function openComparisonChanges(item,reference,candidate) {
+  $("#case-title").textContent=item.case_id; $("#case-eyebrow").textContent="PAIRED FIELD AND SOURCE REVIEW";
+  const content=$("#case-content"); content.replaceChildren(el("p","small",`Reference ${reference.run_id} versus candidate ${candidate.run_id}. Changes describe recorded assertions, citations and defense decisions.`));
+  if(!item.details_measured) content.append(el("p","error","Detailed changes are unmeasured because at least one arm has a runtime error."));
+  const value=actual=>actual===undefined ? "Not recorded" : JSON.stringify(actual);
+  content.append(el("h3","","Changed answer fields"));
+  if(!item.field_changes?.length) content.append(el("p","small","No changed typed fields were recorded. Foundation fact checks do not have typed field assertions."));
+  else {
+    const table=el("table"),head=el("thead"),title=el("tr"),body=el("tbody");
+    for(const text of ["Field","Change","Reference target / observed","Candidate target / observed"]){const cell=el("th","",text);cell.scope="col";title.append(cell);}
+    head.append(title);table.append(head);
+    for(const change of item.field_changes){
+      const describe=check=>check ? `${value(check.expected)} / ${value(check.actual)} · ${check.passed ? "Pass" : "Fail"} · tolerance ${check.tolerance ?? 0}` : "Assertion absent";
+      const row=el("tr");row.append(el("td","",change.field),el("td","",change.change),el("td","",describe(change.reference)),el("td","",describe(change.candidate)));body.append(row);
+    }
+    table.append(body);const wrap=el("div","table-scroll");wrap.append(table);content.append(wrap);
+  }
+  content.append(el("h3","","Citation differences"));
+  if(item.citation_changes){
+    for(const [key,label] of [["added","New citations"],["removed","Removed citations"],["reference_missing","Reference missing required sources"],["candidate_missing","Candidate missing required sources"],["reference_invalid","Reference invalid citations"],["candidate_invalid","Candidate invalid citations"]]) content.append(el("p","small",`${label}: ${item.citation_changes[key].join(", ") || "none"}`));
+  } else content.append(el("p","small","Typed citation assessment was not recorded for these results."));
+  content.append(el("h3","","Retrieval and defense changes"));
+  for(const decision of item.decision_changes || []){
+    const details=el("details","evidence-document");details.append(el("summary","",`${decision.chunk_id} · ${decision.change}`));
+    for(const [key,label] of [["reference","Reference"],["candidate","Candidate"]]){
+      const record=decision[key];details.append(el("p","small",record ? `${label}: ${record.allowed ? "allowed" : "blocked"} · trust ${record.trust ?? "N/A"} · ${record.reason}` : `${label}: not retrieved`));
+    }
+    if(decision.sanitization_changed) details.append(el("p","small","Sanitized context differs; inspect each run's full case evidence for original and transformed text."));
+    content.append(details);
+  }
+  if(!item.decision_changes?.length) content.append(el("p","small","No changed recorded defense decisions."));
+  const actions=el("div","quality-actions");
+  for(const [report,label] of [[reference,"Open reference evidence"],[candidate,"Open candidate evidence"]]){
+    const button=el("button","secondary",label);button.addEventListener("click",async()=>{try{$("#case-dialog").close();await loadReport(report.run_id);openCase(state.report.results.find(row=>row.case_id===item.case_id));}catch(e){error(e.message);}});actions.append(button);
+  }
+  content.append(actions);$("#case-dialog").showModal();
 }
 
 function renderCorpus() {
@@ -617,7 +657,7 @@ function currentConfig() {
            domain: $("#run-domain").value, concurrency: Number($("#run-concurrency").value), selection_scope: scope,
            case_ids: scope === "selected" ? [...selectionState.ids] : null,
            source_run_id: ["remaining", "errors", "failed", "attacks"].includes(scope) ? $("#run-source").value || null : null,
-           model: $("#run-model").value,
+           model: $("#run-model").value, case_definitions:state.customDefinitions || null,
            generation: {temperature:Number($("#run-temperature").value), seed:$("#run-seed").value.trim() === "" ? null : Number($("#run-seed").value), think: {default:null,enabled:true,disabled:false}[$("#run-thinking").value],
              num_predict:Number($("#run-max-tokens").value), num_ctx:Number($("#run-context-window").value), request_timeout:Number($("#run-timeout").value)} };
 }
@@ -639,7 +679,8 @@ function restoreGeneration(settings, profile) {
 
 function renderDomainOptions() {
   const select = $("#run-domain"), previous = select.value;
-  const domains = [...new Set(state.corpus.filter(c => (c.profile || "foundation") === $("#run-profile").value).map(c => c.domain || c.case_id.split("-")[0]))];
+  const source=state.customDefinitions ? state.customDefinitions.map(definition=>({...definition,profile:"complex"})) : state.corpus;
+  const domains = [...new Set(source.filter(c => (c.profile || "foundation") === $("#run-profile").value).map(c => c.domain || c.case_id.split("-")[0]))];
   select.replaceChildren(el("option", "", "All domains")); select.firstElementChild.value = "";
   for (const domain of domains) { const option = el("option", "", domain.charAt(0).toUpperCase() + domain.slice(1)); option.value = domain; select.append(option); }
   if (domains.includes(previous)) select.value = previous;
@@ -648,7 +689,8 @@ function renderDomainOptions() {
 function pickerCases(includeSearch=true) {
   const profile = $("#run-profile").value, domain = $("#run-domain").value, family = $("#run-category").value;
   const query = includeSearch ? $("#scenario-search").value.trim().toLowerCase() : "";
-  return state.corpus.filter(c => (c.profile || "foundation") === profile && (!domain || (c.domain || c.case_id.split("-")[0]) === domain) && (!family || c.category === family) && (!query || [c.case_id, c.domain, c.query].join(" ").toLowerCase().includes(query)));
+  const source=state.customDefinitions ? state.customDefinitions.map(definition=>({...definition,profile:"complex"})) : state.corpus;
+  return source.filter(c => (c.profile || "foundation") === profile && (!domain || (c.domain || c.case_id.split("-")[0]) === domain) && (!family || c.category === family) && (!query || [c.case_id, c.domain, c.query].join(" ").toLowerCase().includes(query)));
 }
 
 function renderScenarioPicker() {
@@ -684,6 +726,7 @@ function renderSourceRuns() {
 
 function configureFromRun(run) {
   const c = run.configuration;
+  state.customDefinitions=c.case_definitions || null;
   setModelChoice(run.mode === "local" ? run.model : "qwen2.5:7b-instruct-q4_K_M");
   restoreGeneration(c.generation, c.profile || "foundation");
   $("#run-profile").value = c.profile || "foundation";
@@ -708,7 +751,7 @@ function syncSelectionControls() {
   $("#batch-size-field").hidden = ["all", "selected"].includes(scope);
   $("#run-limit").disabled = $("#batch-size-field").hidden;
   $("#source-run-field").hidden = !["remaining", "errors", "failed", "attacks"].includes(scope);
-  renderScenarioPicker(); queueSelectionPreview();
+  renderDomainOptions(); renderScenarioPicker(); queueSelectionPreview();
 }
 
 function queueSelectionPreview() {
@@ -721,7 +764,8 @@ function queueSelectionPreview() {
   selectionState.previewTimer = setTimeout(async () => {
     const preview = $("#selection-preview");
     try {
-      const data = await api("/api/selection", currentConfig());
+      const config=currentConfig();
+      const data = await api(config.case_definitions ? "/api/custom/selection" : "/api/selection", config);
       if (revision !== selectionState.previewRevision) return;
       const workers = Math.min(Number($("#run-concurrency").value), data.count);
       preview.textContent = `${data.count} scenario${data.count === 1 ? "" : "s"} · ${data.model_requests} model responses · up to ${workers} concurrent scenario${workers === 1 ? "" : "s"}${data.previous_count ? ` · ${data.previous_count} already tested cases excluded` : ""}.`;
@@ -739,6 +783,7 @@ function queueSelectionPreview() {
 function applyPreset(id) {
   const preset = state.workspace.presets.find(p => p.id === id);
   if (!preset) return;
+  state.customDefinitions=preset.config.case_definitions || null;
   setModelChoice(preset.config.model || "qwen2.5:7b-instruct-q4_K_M");
   restoreGeneration(preset.config.generation, preset.config.profile || "foundation");
   $("#run-profile").value = preset.config.profile || "foundation";
@@ -765,6 +810,8 @@ function updateWorkspace(data) {
   renderHistory();
   renderSuites();
   renderQualityPolicy();
+  if (typeof renderScenarioBuilder==="function") renderScenarioBuilder();
+  if (typeof renderCampaigns==="function") renderCampaigns();
   for (const selector of ["#report-select", "#compare-a", "#compare-b", "#run-source"]) {
     for (const option of $(selector).options) {
       const run = state.runs.find(r => r.run_id === option.value);
@@ -812,6 +859,7 @@ function renderSuites() {
     use.addEventListener("click", async () => {
       try {
         const resolved = await api("/api/suite/resolve", {id:suite.id});
+        state.customDefinitions=resolved.case_definitions || null;
         $("#run-profile").value = resolved.profile; renderDomainOptions();
         $("#run-scope").value = "selected"; $("#run-domain").value = ""; $("#run-category").value = "";
         $("#run-k").value = resolved.profile === "complex" ? 20 : 5;
@@ -833,9 +881,33 @@ function renderSuites() {
         toast("Portable test suite exported.");
       } catch(e) { $("#suite-message").textContent = e.message; }
     });
-    actions.append(use,edit,download); card.append(actions); parent.append(card);
+    const history=el("button","secondary","Revision history"); history.addEventListener("click",()=>openSuiteHistory(suite.id));
+    actions.append(use,edit,history,download); card.append(actions); parent.append(card);
   }
   if (!parent.children.length) parent.append(el("p", "empty", suites.length ? "No suites match this search." : "No saved suites yet. Choose scenarios in a new experiment, then save the selection as a test suite."));
+}
+
+async function openSuiteHistory(id) {
+  const parent=$("#suite-history-content"); parent.replaceChildren(el("p","","Loading archived definitions…"));
+  const dialog=$("#suite-history-dialog"); if(!dialog.open) dialog.showModal();
+  try {
+    const data=await api("/api/suite/history",{id}), revisions=[...data.history,data.current];
+    parent.replaceChildren(el("p","",`${data.current.name} · current revision ${data.current.revision}. Restoring preserves every archived revision and creates the next revision.`));
+    if(revisions.length<data.current.revision) parent.append(el("p","small muted","Some older definitions predate revision archiving and are unavailable."));
+    const controls=el("div","filters"), a=el("select"),b=el("select");
+    a.setAttribute("aria-label","Reference suite revision"); b.setAttribute("aria-label","Candidate suite revision");
+    for(const record of revisions) for(const select of [a,b]) {const option=el("option","",`Revision ${record.revision} · ${record.name}`); option.value=record.revision;select.append(option);}
+    b.value=data.current.revision;
+    const compare=el("button","secondary","Compare revisions"), results=el("div");
+    compare.addEventListener("click",async()=>{try{const diff=await api("/api/suite/compare",{id,reference_revision:Number(a.value),candidate_revision:Number(b.value)}); results.replaceChildren(el("h3","","Definition changes"),el("pre","",JSON.stringify(diff,null,2)));}catch(e){results.replaceChildren(el("p","error",e.message));}});
+    controls.append(a,b,compare);parent.append(controls,results);
+    for(const record of revisions.slice().reverse()) {
+      const card=el("article","panel");card.append(el("h3","",`Revision ${record.revision}${record.revision===data.current.revision?" · current":""}`),el("p","",`${record.case_ids.length} scenarios · ${date(record.updated_at)}${record.restored_from_revision?` · restored from revision ${record.restored_from_revision}`:""}`));
+      const details=el("details");details.append(el("summary","","Inspect frozen definition"),el("pre","",JSON.stringify(record,null,2)));card.append(details);
+      if(record.revision!==data.current.revision) {const restore=el("button","secondary",`Restore revision ${record.revision} as revision ${data.current.revision+1}`);restore.addEventListener("click",async()=>{restore.disabled=true;try{updateWorkspace(await api("/api/suite/restore",{id,revision:record.revision,expected_revision:data.current.revision}));await openSuiteHistory(id);toast("Suite restored as a new revision.");}catch(e){restore.disabled=false;results.replaceChildren(el("p","error",e.message));}});card.append(restore);}
+      parent.append(card);
+    }
+  } catch(e){parent.replaceChildren(el("p","error",e.message));}
 }
 
 function renderPresets() {
@@ -957,7 +1029,7 @@ async function poll() {
 }
 
 document.querySelectorAll(".nav-item").forEach(button => button.addEventListener("click", () => view(button.dataset.view)));
-document.querySelectorAll(".new-run").forEach(button => button.addEventListener("click", () => { $("#run-error").textContent = ""; syncSelectionControls(); $("#new-dialog").showModal(); }));
+document.querySelectorAll(".new-run").forEach(button => button.addEventListener("click", () => { if(state.customDefinitions){state.customDefinitions=null;selectionState.ids.clear();$("#run-scope").value="sample";} $("#run-error").textContent = ""; syncSelectionControls(); $("#new-dialog").showModal(); }));
 document.querySelectorAll(".close-dialog").forEach(button => button.addEventListener("click", () => button.closest("dialog").close()));
 for (const selector of ["#category-filter", "#run-category", "#corpus-category"]) {
   for (const [value, name] of Object.entries(names)) { const option = el("option", "", name); option.value = value; $(selector).append(option); }
@@ -1049,9 +1121,10 @@ $("#create-suite").addEventListener("click", () => {
 $("#save-suite-selection").addEventListener("click", async () => {
   const button = $("#save-suite-selection"); button.disabled = true;
   try {
-    const config = currentConfig(), selection = await api("/api/selection", config);
+    const config = currentConfig(), selection = await api(config.case_definitions ? "/api/custom/selection" : "/api/selection", config);
     $("#new-dialog").close();
-    openSuiteEditor({name:"", description:"", profile:config.profile, case_ids:selection.case_ids});
+    openSuiteEditor({name:"", description:"", profile:config.profile, case_ids:selection.case_ids,
+      ...(config.case_definitions ? {case_definitions:config.case_definitions.filter(definition=>selection.case_ids.includes(definition.case_id))} : {})});
   } catch(e) { $("#run-error").textContent = e.message; }
   finally { button.disabled = false; }
 });
@@ -1060,7 +1133,8 @@ $("#suite-form").addEventListener("submit", async event => {
   const button = $("#save-suite"); button.disabled = true;
   const record = suiteDraft.record;
   const fields = {name:$("#suite-name").value, description:$("#suite-description").value,
-    profile:$("#suite-profile").value, case_ids:$("#suite-cases").value.split(/\r?\n/).map(id => id.trim()).filter(Boolean)};
+    profile:$("#suite-profile").value, case_ids:$("#suite-cases").value.split(/\r?\n/).map(id => id.trim()).filter(Boolean),
+    ...(record.case_definitions ? {case_definitions:record.case_definitions} : {})};
   try {
     const body = suiteDraft.imported ? {...record,...fields} : {...fields,...(record.id ? {id:record.id,revision:record.revision} : {})};
     updateWorkspace(await api(suiteDraft.imported ? "/api/suite/import" : "/api/suite", body));
@@ -1072,7 +1146,7 @@ $("#suite-form").addEventListener("submit", async event => {
 $("#suite-import").addEventListener("change", async () => {
   const input = $("#suite-import"), file = input.files[0]; if (!file) return;
   try {
-    if (file.size > 8192) throw new Error("Suite manifests must be no larger than 8 KiB.");
+    if (file.size > 8*1024*1024) throw new Error("Suite manifests must be no larger than 8 MiB.");
     const manifest = JSON.parse(await file.text());
     if (!manifest || manifest.format !== "spades-test-suite" || manifest.version !== 1 || !Array.isArray(manifest.case_ids) || !["foundation","complex"].includes(manifest.profile)) throw new Error("Choose a Spades version-1 test-suite manifest.");
     openSuiteEditor(manifest,true);
@@ -1128,6 +1202,7 @@ $("#run-source").addEventListener("change", () => {
   if (run) { configureFromRun(run); $("#run-scope").value = scope; syncSelectionControls(); }
 });
 $("#run-profile").addEventListener("change", () => {
+  state.customDefinitions=null;
   const complex = $("#run-profile").value === "complex";
   $("#run-limit").value = 6;
   $("#run-k").value = complex ? 16 : 5;
@@ -1155,7 +1230,7 @@ $("#run-form").addEventListener("submit", async event => {
   event.preventDefault(); const button = $("#launch-run"); button.disabled = true; $("#run-error").textContent = "";
   try {
     const config = currentConfig();
-    const active = await api("/api/run", config); updateProgress(active); $("#new-dialog").close(); error("");
+    const active = await api(config.case_definitions ? "/api/custom/run" : "/api/run", config); updateProgress(active); $("#new-dialog").close(); error("");
     toast("Experiment started. You can continue inspecting saved evidence.");
   } catch (e) { $("#run-error").textContent = e.message; }
   finally { button.disabled = false; }

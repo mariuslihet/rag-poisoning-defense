@@ -150,6 +150,16 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(self.request("POST","/api/quality-policy/archive",body)[0],400)
         self.assertEqual(self.request("POST","/api/quality-policy/archive",{"policy":{"name":"Other"}},{"X-Spades-Token":""})[0],403)
 
+    def test_rejected_post_bodies_deliver_status_without_mutating_workspace(self):
+        original=self.manager.workspace()
+        for headers,status in (({"X-Spades-Token":""},403),({"Origin":"http://example.invalid"},403),({"Content-Type":"text/plain"},415)):
+            for _ in range(3):
+                actual,payload,_=self.request("POST","/api/campaign/create",{"name":"Rejected","payload":"x"*2000},headers)
+                self.assertEqual(actual,status)
+                self.assertIn("error",json.loads(payload))
+        self.assertEqual(self.manager.workspace(),original)
+        self.assertIsNone(self.manager.snapshot())
+
     def test_quality_previews_and_history_are_read_only_and_scope_checked(self):
         first,second=run_suite(limit=2),run_suite(limit=2)
         write_report(first,self.manager.output/"first"); write_report(second,self.manager.output/"second")
