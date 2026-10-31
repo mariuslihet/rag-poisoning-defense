@@ -30,6 +30,7 @@ async function campaignBody() {
   if (!models.length || !policies.length || !seeds.length) throw new Error("Choose generation models, a defense policy and at least one trial seed.");
   if (new Set(models).size!==models.length || new Set(seeds).size!==seeds.length) throw new Error("Model names and trial seeds must be unique.");
   const body={name:$("#campaign-name").value,base_config:base,models,policies,seeds};
+  const variants=$("#campaign-retrieval-variants").value.trim();if(variants){try{body.retrieval_variants=JSON.parse(variants);}catch(e){throw new Error("Retrieval variants must be a JSON array.");}if(!Array.isArray(body.retrieval_variants) || !body.retrieval_variants.length || body.retrieval_variants.length>10)throw new Error("Provide 1–10 retrieval variants.");}
   for(const [key,id,min,max,integer] of [["thresholds","campaign-thresholds",0,1,false],["retrieval_depths","campaign-depths",1,50,true],["temperatures","campaign-temperatures",0,2,false]]) {
     const values=parseCampaignSweep($("#"+id).value,min,max,integer);if(values)body[key]=values;
   }
@@ -40,7 +41,7 @@ async function campaignBody() {
 async function previewCampaign() {
   const body=await campaignBody(), preview=await api("/api/campaign/preview",body);
   const parent=$("#campaign-plan");parent.replaceChildren(el("p","",`${preview.trial_jobs} trial jobs · ${preview.scenario_plan.scenarios} fixed scenarios per trial · ${preview.scenario_evaluations} scenario evaluations · ${preview.model_responses} model responses · ${preview.generation_applied ? "REAL LOCAL inference":"DEMONSTRATION responses; generation parameters are not applied"}. Trials execute sequentially with bounded scenario workers.`),
-    el("p","small",`Trust thresholds: ${preview.axes.thresholds.join(", ")} · retrieval depths: ${preview.axes.retrieval_depths.join(", ")} · temperatures: ${preview.axes.temperatures.join(", ")}.`));
+    el("p","small",`Trust thresholds: ${preview.axes.thresholds.join(", ")} · retrieval depths: ${preview.axes.retrieval_depths.join(", ")} · temperatures: ${preview.axes.temperatures.join(", ")} · retrieval variants: ${preview.axes.retrieval_variants.length}.`));
   const details=el("details");details.append(el("summary","","Inspect every planned trial configuration"),el("pre","",JSON.stringify(preview.configurations,null,2)));parent.append(details,el("p","small",preview.note));
   body.base_config=preview.base_config;
   return body;
@@ -110,7 +111,7 @@ function renderCampaignDetail(record) {
   const comparison=el("table"),comparisonHead=el("thead"),comparisonTitles=el("tr"),comparisonBody=el("tbody");
   for(const name of ["Model / defense","Trust / depth / temperature","Complete / planned trials","Task success / descriptive interval"]){const th=el("th","",name);th.scope="col";comparisonTitles.append(th);}
   comparisonHead.append(comparisonTitles);comparison.append(comparisonHead);
-  for(const group of reliability.groups){const c=group.configuration,row=el("tr");row.append(el("td","",`${c.model} · ${c.policy}${c.mode==="demo" ? " · DEMO":""}${group.identity_changed ? " · WEIGHTS CHANGED":""}`),el("td","",`${c.threshold} / ${c.k} / ${c.generation.temperature}`),el("td","",`${group.completed_trials} / ${group.planned_trials}`),el("td","",`${percent(group.task_trial_rate)} · ${campaignInterval(group.task_trial_interval)}`));comparisonBody.append(row);}
+  for(const group of reliability.groups){const c=group.configuration,row=el("tr");row.append(el("td","",`${c.model} · ${c.policy}${c.mode==="demo" ? " · DEMO":""}${group.identity_changed ? " · WEIGHTS CHANGED":""}`),el("td","",`${c.threshold} / ${c.k} / ${c.generation.temperature} · ${c.retrieval.method} · ${c.retrieval.chunk_size}/${c.retrieval.overlap} · ${c.retrieval.rerank}`),el("td","",`${group.completed_trials} / ${group.planned_trials}`),el("td","",`${percent(group.task_trial_rate)} · ${campaignInterval(group.task_trial_interval)}`));comparisonBody.append(row);}
   comparison.append(comparisonBody);const comparisonScroll=el("div","table-scroll");comparisonScroll.append(comparison);parent.append(comparisonScroll);
   parent.append(el("h3","","Repeated-trial reliability"),el("p","small muted",`${reliability.logical_trials} logical trials · ${reliability.attempts} attempts · ${reliability.superseded_attempts} superseded attempts. A successful trial must pass every frozen case.`));
   for (const group of reliability.groups) {

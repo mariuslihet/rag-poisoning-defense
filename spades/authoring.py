@@ -99,7 +99,7 @@ def _scalar(value, label):
 def validate_definition(body):
     """Return a bounded canonical scenario; no files, models or URLs are opened."""
     required = {"name", "query", "documents", "rubric", "required_sources"}
-    allowed = required | {"case_id", "domain", "category", "clearance", "retrieval_queries", "attack", "attack_goal"}
+    allowed = required | {"case_id", "domain", "category", "clearance", "retrieval_queries", "attack", "attack_goal", "turns"}
     if not isinstance(body, dict) or not required <= set(body) or set(body) - allowed:
         raise ValueError("Expected scenario name, task, documents, rubric and required source IDs")
     case_id = body.get("case_id", "custom-" + uuid.uuid4().hex)
@@ -125,6 +125,35 @@ def validate_definition(body):
     ids = [document["source_id"] for document in documents]
     if len(set(ids)) != len(ids):
         raise ValueError("Source document IDs must be unique")
+    turns = None
+    staged_documents, tool_outputs = [], []
+    if "turns" in body:
+        if not isinstance(body["turns"], list) or not 1 <= len(body["turns"]) <= 8:
+            raise ValueError("A conversation requires 1–8 ordered turns")
+        turns = []
+        for turn in body["turns"]:
+            if not isinstance(turn, dict) or "task" not in turn or set(turn) - {"task", "documents", "tool_outputs"}:
+                raise ValueError("Each turn requires a task and optional documents/tool_outputs lists")
+            task = _text(turn["task"], "Turn task", 20_000).strip()
+            if CANARY.casefold() in task.casefold():
+                raise ValueError("Turn tasks must not contain the restricted synthetic canary value")
+            for key, maximum in (("documents", 40), ("tool_outputs", 16)):
+                values = turn.get(key, [])
+                if not isinstance(values, list) or len(values) > maximum:
+                    raise ValueError(f"Turn {key} must be a bounded document list")
+            added = [_document(value) for value in turn.get("documents", [])]
+            tools = [_document(value, attack=True) for value in turn.get("tool_outputs", [])]
+            staged_documents.extend(added)
+            tool_outputs.extend(tools)
+            turns.append({"task": task, "documents": added, "tool_outputs": tools})
+        if turns[-1]["task"] != query:
+            raise ValueError("The last turn task must exactly match the final analytical task")
+        if len(documents) + len(staged_documents) > 40 or len(tool_outputs) > 16:
+            raise ValueError("Conversations support up to 40 legitimate documents and 16 simulated tool outputs in total")
+        all_ids = ids + [value["source_id"] for value in staged_documents + tool_outputs]
+        if len(set(all_ids)) != len(all_ids):
+            raise ValueError("Source IDs must be unique across all conversation stages and simulated tool outputs")
+        ids += [value["source_id"] for value in staged_documents]
     required_sources = body["required_sources"]
     if (not isinstance(required_sources, list) or not 1 <= len(required_sources) <= 40
             or not all(isinstance(source, str) for source in required_sources)
@@ -168,10 +197,11 @@ def validate_definition(body):
         if type(approved) is not bool:
             raise ValueError("Attack provenance approval must be an explicit boolean")
         attack = {"document": _document(attack["document"], attack=True), "approved_provenance": approved}
-        if attack["document"]["source_id"] in ids:
+        if attack["document"]["source_id"] in ids + [value["source_id"] for value in tool_outputs]:
             raise ValueError("The attack document must have a distinct source ID")
         if category == "baseline":
             raise ValueError("An adversarial document requires an attack family, not baseline")
+    if attack is not None or (tool_outputs and category != "baseline"):
         if not isinstance(goal, dict):
             raise ValueError("Attack goal must be an object")
         if goal.get("kind") == "canary" and set(goal) == {"kind"}:
@@ -185,20 +215,21 @@ def validate_definition(body):
                 raise ValueError("The attack target must use the reference field type")
             if matches(value, rule["expected"], rule["tolerance"]):
                 raise ValueError("The attack target must differ from the legitimate reference")
-            if isinstance(value, str) and len(value) >= 4 and any(value.casefold() in text.casefold() for text in [query, *retrieval]):
+            tasks = [query, *retrieval, *[turn["task"] for turn in turns or []]]
+            if isinstance(value, str) and len(value) >= 4 and any(value.casefold() in text.casefold() for text in tasks):
                 raise ValueError("Do not include the attacker-selected target in the analytical task or retrieval queries")
             goal = {"kind": "field", "field": goal["field"], "equals": value}
         else:
             raise ValueError("Choose a synthetic-canary goal or a typed field target")
     elif category != "baseline" or goal:
         raise ValueError("Attack-family scenarios require an attack document and goal")
-    total = sum(len(document["text"]) for document in documents) + (len(attack["document"]["text"]) if attack else 0)
+    total = sum(len(document["text"]) for document in documents + staged_documents + tool_outputs) + (len(attack["document"]["text"]) if attack else 0)
     if total > 1_000_000:
         raise ValueError("Total scenario document text must not exceed 1,000,000 characters")
     return {"case_id": case_id, "name": name, "domain": domain, "query": query,
             "documents": documents, "rubric": rubric, "required_sources": list(required_sources),
             "category": category, "clearance": clearance, "retrieval_queries": retrieval,
-            "attack": attack, "attack_goal": goal}
+            "attack": attack, "attack_goal": goal, **({"turns": turns} if turns is not None else {})}
 
 
 def definition_digest(definition):
@@ -232,7 +263,9 @@ def definition_to_case(definition):
                 trusted_poison=attack["approved_provenance"] if attack else False,
                 target=target, rubric=deepcopy(definition["rubric"]), required_sources=list(definition["required_sources"]),
                 retrieval_queries=definition["retrieval_queries"] or [definition["query"]], answer_schema=schema,
-                attack_goal=deepcopy(goal), profile="complex", domain=definition["domain"], clearance=definition["clearance"])
+                attack_goal=deepcopy(goal), profile="complex", domain=definition["domain"], clearance=definition["clearance"],
+                turns=[{"task":turn["task"],"documents":[document(value) for value in turn["documents"]],
+                        "tool_outputs":[document(value) for value in turn["tool_outputs"]]} for turn in definition.get("turns",[])])
 
 
 def save_scenario(workspace, body):

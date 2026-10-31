@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import copy
 
 from .datasets import dataset_identity
-from .settings import validate_generation
+from .settings import validate_generation, validate_retrieval
 from .suites import plan_cases
 
 
@@ -44,6 +44,8 @@ def coverage_plan(config, cases, reports, *, focus="unseen", budget=6):
                 reason = "defense or retrieval settings"
             elif config["mode"] == "local" and (not recorded.get("generation") or _generation(recorded["generation"], config["profile"]) != _generation(config["generation"], config["profile"])):
                 reason = "generation settings missing or different"
+            elif validate_retrieval(recorded.get("retrieval_settings"),config["profile"])!=validate_retrieval(config.get("retrieval"),config["profile"]):
+                reason = "retrieval method or chunking settings"
             elif not _instant(report.get("created_at")):
                 reason = "invalid evidence time"
             elif not any(row.get("case_id") in target_ids for row in report.get("results", [])):
@@ -93,6 +95,7 @@ def coverage_plan(config, cases, reports, *, focus="unseen", budget=6):
             status = "review" if issues else "passed"
         failed = [check["field"] for check in grade.get("checks", []) if not check.get("passed")]
         entries.append({"case_id": case.case_id, "domain": case.domain or case.case_id.split("-")[0],
+                        "turn_count":max(1,len(getattr(case,"turns",[]))),
                         "category": case.category, "status": status, "issues": issues, "failed_fields": failed,
                         "missing_citations": grade.get("missing_citations", []), "error": row.get("error"),
                         "run_id": report.get("run_id"), "observed_at": report.get("created_at"),

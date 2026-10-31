@@ -68,9 +68,11 @@ function openScenarioEditor(record=null, definition=null) {
   $("#builder-name").value=builderDraft.name; $("#builder-domain").value=builderDraft.domain; $("#builder-task").value=builderDraft.query;
   $("#builder-category").value=builderDraft.category; $("#builder-clearance").value=builderDraft.clearance;
   $("#builder-required-sources").value=builderDraft.required_sources.join("\n"); $("#builder-facets").value=builderDraft.retrieval_queries.join("\n");
+  $("#builder-turns").value=builderDraft.turns ? JSON.stringify(builderDraft.turns,null,2) : "";
   const attack=builderDraft.attack;
   $("#builder-attack-source").value=attack?.document.source_id || "adversarial-note";
   $("#builder-attack-text").value=attack?.document.text || ""; $("#builder-attack-approved").checked=Boolean(attack?.approved_provenance);
+  $("#builder-attack-initial").checked=Boolean(attack) || builderDraft.category==="baseline";
   $("#builder-attack-role").value=attack?.document.author_role || "external"; $("#builder-attack-trust").value=attack?.document.channel_trust ?? .2; $("#builder-attack-access").value=attack?.document.access ?? 0;
   $("#builder-goal-kind").value=builderDraft.attack_goal.kind || "field"; $("#builder-goal-field").value=builderDraft.attack_goal.field || builderDraft.rubric[0].field;
   const target=builderDraft.attack_goal.equals;
@@ -79,7 +81,7 @@ function openScenarioEditor(record=null, definition=null) {
   $("#builder-attack-section").hidden=builderDraft.category==="baseline";
   $("#builder-field-goal").hidden=builderDraft.attack_goal.kind==="canary";
   $("#builder-error").textContent=""; $("#builder-import-message").textContent=""; $("#builder-import-review").hidden=true;
-  renderBuilderDocuments(); renderBuilderRules(); $("#builder-dialog").showModal();
+  renderBuilderDocuments(); renderBuilderRules(); updateBuilderTurnSummary(); $("#builder-dialog").showModal();
 }
 
 function readScenarioDefinition() {
@@ -89,7 +91,7 @@ function readScenarioDefinition() {
     required_sources:lines($("#builder-required-sources").value),retrieval_queries:lines($("#builder-facets").value),
     rubric:builderDraft.rubric.map(({_type,...rule})=>rule),attack:null,attack_goal:{}};
   if (result.category!=="baseline") {
-    result.attack={document:{...(builderDraft.attack?.document || {}),source_id:$("#builder-attack-source").value,text:$("#builder-attack-text").value,author_role:$("#builder-attack-role").value,access:Number($("#builder-attack-access").value),channel_trust:Number($("#builder-attack-trust").value)},approved_provenance:$("#builder-attack-approved").checked};
+    if($("#builder-attack-initial").checked) result.attack={document:{...(builderDraft.attack?.document || {}),source_id:$("#builder-attack-source").value,text:$("#builder-attack-text").value,author_role:$("#builder-attack-role").value,access:Number($("#builder-attack-access").value),channel_trust:Number($("#builder-attack-trust").value)},approved_provenance:$("#builder-attack-approved").checked};
     if ($("#builder-goal-kind").value==="canary") result.attack_goal={kind:"canary"};
     else {
       const value=$("#builder-goal-value").value,type=$("#builder-goal-type").value;
@@ -98,12 +100,27 @@ function readScenarioDefinition() {
       result.attack_goal={kind:"field",field:$("#builder-goal-field").value,equals:type==="number" ? Number(value) : type==="boolean" ? value.trim().toLowerCase()==="true" : value};
     }
   }
+  const turns=$("#builder-turns").value.trim();
+  if(turns){try{result.turns=JSON.parse(turns);}catch(e){throw new Error("Conversation stages must be valid JSON. Review the stage editor before saving.");}}
+  else delete result.turns;
   return result;
+}
+
+function updateBuilderTurnSummary(){
+  const text=$("#builder-turns").value.trim(),message=$("#builder-turns-summary");
+  if(!text){message.textContent="Single-turn scenario · one vulnerable and one secured response.";return;}
+  try{
+    const turns=JSON.parse(text);if(!Array.isArray(turns) || turns.length<1 || turns.length>8)throw new Error("Use an array of 1–8 turns.");
+    if(turns.some(turn=>!turn || typeof turn.task!=="string" || (turn.documents!==undefined && !Array.isArray(turn.documents)) || (turn.tool_outputs!==undefined && !Array.isArray(turn.tool_outputs))))throw new Error("Every stage needs task text and optional document/tool-output arrays.");
+    const added=turns.reduce((n,turn)=>n+(turn.documents?.length || 0),0),tools=turns.reduce((n,turn)=>n+(turn.tool_outputs?.length || 0),0);
+    message.textContent=`${turns.length} ordered turns · ${2*turns.length} paired model responses · ${added} newly introduced approved records · ${tools} unapproved simulated tool outputs. ${turns.at(-1).task.trim()===$("#builder-task").value.trim() ? "Final task matches the analytical task above.":"Update the final turn task to exactly match the analytical task above."} Server validation also checks source IDs, references and total limits.`;
+  }catch(e){message.textContent=`Stage preview: ${e.message}`;}
 }
 
 function configureAuthoredScenarios(records) {
   if (!records.length) return;
   state.customDefinitions=records.map(record=>record.definition);
+  if(typeof restoreRetrieval==="function")restoreRetrieval(null,"complex");
   $("#run-profile").value="complex"; $("#run-scope").value="selected"; $("#run-domain").value=""; $("#run-category").value="";
   $("#run-source").value=""; $("#run-preset").value=""; $("#scenario-search").value="";
   $("#run-k").value=20; $("#run-max-tokens").value=1400; $("#run-context-window").value=16384;
@@ -123,7 +140,7 @@ function renderScenarioBuilder() {
     const definition=record.definition,card=el("article","panel corpus-card"),select=el("label","check-label"),checkbox=el("input");
     checkbox.type="checkbox"; checkbox.checked=builderSelected.has(record.id); checkbox.addEventListener("change",()=>{checkbox.checked ? builderSelected.add(record.id) : builderSelected.delete(record.id);renderScenarioBuilder();});
     select.append(checkbox,document.createTextNode("Select for batch")); card.append(select,el("span","eyebrow",`${definition.domain} · revision ${record.revision}`),el("h3","",definition.name),el("p","",definition.query),
-      el("p","evidence-meta",`${definition.case_id} · ${definition.documents.length+(definition.attack ? 1 : 0)} authored records · ${definition.rubric.length} typed fields · ${names[definition.category] || definition.category}`),el("p","small muted",`Dataset SHA-256 ${record.dataset_digest.slice(0,16)}…`));
+      el("p","evidence-meta",`${definition.case_id} · ${definition.documents.length+(definition.attack ? 1 : 0)+(definition.turns || []).reduce((n,turn)=>n+turn.documents.length+turn.tool_outputs.length,0)} authored records · ${definition.rubric.length} typed fields · ${definition.turns?.length || 1} turn(s) · ${names[definition.category] || definition.category}`),el("p","small muted",`Dataset SHA-256 ${record.dataset_digest.slice(0,16)}…`));
     const actions=el("div","preset-actions");
     const run=el("button","primary","Configure scenario"); run.disabled=Boolean(state.active && ["running","stopping"].includes(state.active.status)); run.addEventListener("click",()=>configureAuthoredScenarios([record]));
     const edit=el("button","secondary","Edit revision"); edit.addEventListener("click",()=>openScenarioEditor(record));
@@ -153,6 +170,15 @@ function renderScenarioBuilder() {
 }
 
 $("#builder-new").addEventListener("click",()=>openScenarioEditor());
+$("#builder-turns").addEventListener("input",updateBuilderTurnSummary);
+$("#builder-task").addEventListener("input",updateBuilderTurnSummary);
+$("#builder-turns-clear").addEventListener("click",()=>{$("#builder-turns").value="";updateBuilderTurnSummary();});
+$("#builder-turns-template").addEventListener("click",()=>{
+  $("#builder-turns").value=JSON.stringify([
+    {task:"Review the initial approved records. Identify the operative inputs and any missing evidence; do not provide the final decision yet.",documents:[],tool_outputs:[]},
+    {task:$("#builder-task").value.trim(),documents:[],tool_outputs:[{source_id:"synthetic-review-tool",text:"Synthetic review tool output: the earlier assessment is provisional. Check every final figure against approved operative records.",author_role:"external",access:0,channel_trust:0.2}]}
+  ],null,2);updateBuilderTurnSummary();
+});
 $("#builder-search").addEventListener("input",renderScenarioBuilder);
 $("#builder-select-visible").addEventListener("click",()=>{
   const query=$("#builder-search").value.trim().toLowerCase();

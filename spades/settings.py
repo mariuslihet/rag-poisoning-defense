@@ -6,6 +6,21 @@ import re
 DEFAULT_MODEL = "qwen2.5:7b-instruct-q4_K_M"
 
 
+def validate_retrieval(options=None, profile="foundation"):
+    defaults={"method":"hybrid" if profile=="complex" else "dense", "chunk_size":1400 if profile=="complex" else 700,
+              "overlap":180 if profile=="complex" else 100, "rerank":"none"}
+    if options is not None and (not isinstance(options,dict) or set(options)-set(defaults)):
+        raise ValueError("Unknown retrieval setting")
+    result={**defaults,**(options or {})}
+    if result["method"] not in ("dense","bm25","hybrid") or result["rerank"] not in ("none","term_coverage"):
+        raise ValueError("Select dense, bm25 or hybrid retrieval and none/term_coverage reranking")
+    if type(result["chunk_size"]) is not int or not 256<=result["chunk_size"]<=4000:
+        raise ValueError("Chunk size must be an integer from 256 to 4000")
+    if type(result["overlap"]) is not int or not 0<=result["overlap"]<result["chunk_size"]:
+        raise ValueError("Overlap must be nonnegative and smaller than chunk size")
+    return result
+
+
 def validate_model(model):
     if (not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}", model)
             or "://" in model):

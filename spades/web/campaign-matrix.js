@@ -16,7 +16,7 @@ function parseCampaignSweep(text,min,max,integer=false) {
 
 function campaignMatrixSize(body) {
   return body.models.length*body.policies.length*body.seeds.length*
-    (body.thresholds?.length || 1)*(body.retrieval_depths?.length || 1)*(body.temperatures?.length || 1);
+    (body.thresholds?.length || 1)*(body.retrieval_depths?.length || 1)*(body.temperatures?.length || 1)*(body.retrieval_variants?.length || 1);
 }
 
 if(typeof module!=="undefined" && module.exports)module.exports={parseCampaignSweep,campaignMatrixSize};

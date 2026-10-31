@@ -16,3 +16,7 @@ test('workload multiplication includes all sweep axes and retains legacy counts'
   assert.equal(campaignMatrixSize(base),6);
   assert.equal(campaignMatrixSize({...base,thresholds:[.5,.9],retrieval_depths:[5,10],temperatures:[0,1]}),48);
 });
+
+test('retrieval variants multiply the declared campaign budget',()=>{
+  assert.equal(campaignMatrixSize({models:['a'],policies:['strict','sanitize'],seeds:[42],retrieval_variants:[{method:'dense'},{method:'bm25'},{method:'hybrid'}]}),6);
+});

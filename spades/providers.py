@@ -10,6 +10,8 @@ from collections import Counter
 from .core import Chunk
 from .cache import EmbeddingCache, valid_vector
 from .settings import validate_generation, validate_model
+from .requests import capture_request, user_message
+import copy
 
 _CHROMA_INIT_LOCK = threading.Lock()
 
@@ -102,7 +104,9 @@ class Ollama:
                     found[i] = vector
             return found
 
-    def answer(self, query, chunks, defended, schema=None):
+    def answer(self, query, chunks, defended, schema=None, history=None):
+        self._answer_state.metadata = {}
+        self._answer_state.record = None
         system = ("You are an enterprise evidence analyst. Answer the user's specific case using the supplied records. "
                   "Resolve applicable versions and explicitly accepted amendments before calculating. Keep currencies, "
                   "time zones, calendar days and business days distinct. Identify the inputs and arithmetic in a concise "
@@ -120,7 +124,6 @@ class Ollama:
                        "When a field lacks evidence, return null for it and name the missing input; do not invent a value. "
                        "Use true/false for booleans and numbers without currency symbols for numeric fields. "
                        "Field names ending _utc require ISO 8601 UTC timestamps. Never put the JSON inside prose.")
-        context = json.dumps([{"source": c.source_id, "chunk": c.chunk_id, "text": c.text} for c in chunks])
         options = validate_generation(self.generation, "complex" if schema else "foundation")
         options.pop("request_timeout")
         think = options.pop("think")
@@ -128,14 +131,17 @@ class Ollama:
             options.pop("seed")
         payload = {
             "model": self.model, "stream": False, "keep_alive": "30m", "options": options,
-            "messages": [{"role": "system", "content": system},
-                         {"role": "user", "content": f"Documents (JSON):\n{context}\nQuestion: {query}"}],
+            "messages": [{"role": "system", "content": system},*(copy.deepcopy(history) if history else []),user_message(query,chunks)],
         }
         if schema:
             payload["format"] = schema
         if think is not None:
             payload["think"] = think
-        result = self.request("/api/chat", payload)
+        self._answer_state.record = capture_request("ollama_chat",payload,self.request_timeout,self._model_digest)
+        try:
+            result = self.request("/api/chat", payload)
+        finally:
+            self._answer_state.record = capture_request("ollama_chat",payload,self.request_timeout,self._model_digest)
         content = result["message"]["content"]
         self._answer_state.metadata = {"done_reason": result.get("done_reason"), "generated_tokens": result.get("eval_count"),
             "prompt_tokens": result.get("prompt_eval_count"), "empty_response": not content.strip(),
@@ -145,11 +151,21 @@ class Ollama:
     def response_metadata(self):
         return dict(getattr(self._answer_state, "metadata", {}))
 
+    def request_record(self):
+        return copy.deepcopy(getattr(self._answer_state,"record",None))
+
 
 class DemoModel:
     """Deterministic simulator; its outputs are NOT model measurements."""
 
-    def answer(self, query, chunks, defended, schema=None):
+    def __init__(self):
+        self._answer_state=threading.local()
+
+    def request_record(self):
+        return copy.deepcopy(getattr(self._answer_state,"record",None))
+
+    def answer(self, query, chunks, defended, schema=None, history=None):
+        self._answer_state.record=capture_request("demo",{"query":query,"chunks":[asdict(chunk) for chunk in chunks],"defended":defended,"schema":schema,"history":copy.deepcopy(history or [])})
         if schema:
             return json.dumps({"answers": {}, "citations": [], "explanation": "The demonstration checks pipeline wiring only. Use local inference to evaluate enterprise reasoning.", "limitations": ["No cross-document reasoning is simulated."]})
         for chunk in chunks:
@@ -220,11 +236,11 @@ class ChromaIndex:
             self.client.close()
 
 
-class HybridIndex:
-    """Fuse dense search with BM25 to retain rare entities and operative terms."""
+class BM25Index:
+    """Pure BM25 lexical ranking without vectors or model requests."""
 
-    def __init__(self, dense, chunks):
-        self.dense, self.chunks = dense, chunks
+    def __init__(self, chunks):
+        self.chunks = chunks
         self.terms = [Counter(re.findall(r"[a-z0-9]+", c.text.lower())) for c in chunks]
         self.lengths = [sum(counts.values()) for counts in self.terms]
         self.average = sum(self.lengths) / max(1, len(chunks))
@@ -242,6 +258,17 @@ class HybridIndex:
                     score += idf * (tf * 2.2) / (tf + 1.2 * (0.25 + 0.75 * length / max(1, self.average)))
             scores.append((score, chunk))
         lexical = [chunk for score, chunk in sorted(scores, key=lambda item: item[0], reverse=True)[:k] if score > 0]
+        return lexical
+
+
+class HybridIndex(BM25Index):
+    """Reciprocal-rank fusion of dense retrieval and BM25."""
+    def __init__(self,dense,chunks):
+        super().__init__(chunks)
+        self.dense=dense
+
+    def search(self,query,k=16):
+        lexical=super().search(query,k)
         fused, records = {}, {}
         for weight, hits in ((1, self.dense.search(query, k)), (1.3, lexical)):
             for rank, chunk in enumerate(hits, 1):

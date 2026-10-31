@@ -58,7 +58,7 @@ function view(name) {
     node.classList.toggle("selected", selected);
     if (selected) node.setAttribute("aria-current", "page"); else node.removeAttribute("aria-current");
   });
-  $("#breadcrumb").textContent = { overview: "Overview", experiments: "Experiments", corpus: "Scenario library", runtime: "Local runtime", presets: "Presets", bookmarks: "Bookmarks", suites: "Test suites", builder:"Scenario builder", campaigns:"Campaigns", coverage:"Coverage planner", investigations:"Investigations" }[name];
+  $("#breadcrumb").textContent = { overview: "Overview", experiments: "Experiments", corpus: "Scenario library", runtime: "Local runtime", presets: "Presets", bookmarks: "Bookmarks", suites: "Test suites", builder:"Scenario builder", campaigns:"Campaigns", coverage:"Coverage planner", investigations:"Investigations",findings:"Findings",portable:"Evidence bundles",replay:"Request replay" }[name];
   window.scrollTo({ top: 0, behavior: "instant" });
   if (name === "runtime") refreshRuntime().catch(e => error(e.message));
 }
@@ -197,6 +197,11 @@ function openCase(row) {
     $("#case-dialog").close(); syncSelectionControls(); $("#new-dialog").showModal();
   });
   content.append(retest);
+  const replay=el("button","secondary","Inspect / replay captured requests");replay.addEventListener("click",()=>{$("#case-dialog").close();openReplayDraft(state.report.run_id,row.case_id).catch(e=>error(e.message));});
+  const finding=el("button","secondary","Track a finding");finding.addEventListener("click",()=>{$("#case-dialog").close();openFindingDraft(state.report.run_id,row.case_id).catch(e=>error(e.message));});
+  const regression=el("button","secondary","Create a regression pack");regression.addEventListener("click",()=>{$("#case-dialog").close();view("portable");renderPortable();portableState.report=state.report;portableState.cases=new Set([row.case_id]);$("#regression-run").value=state.report.run_id;renderRegressionCases();});
+  const tools=el("div","quality-actions");tools.append(replay,finding,regression);content.append(tools);
+  if(row.turn_results?.length){const turns=el("details");turns.append(el("summary","",`${row.turn_results.length} recorded turn(s) · inspect conversation evidence`),el("p","small",row.history_note || "Recorded per-turn evidence"));for(const turn of row.turn_results){turns.append(el("h4","",`Turn ${turn.turn}: ${turn.task}`));for(const arm of ["vulnerable","secured"])turns.append(el("h5","",arm),el("pre","",turn[arm+"_response"] ?? "No completed response"));}content.append(turns);}
   const diagnosis = state.report.analysis?.cases.find(item => item.case_id === row.case_id);
   if (diagnosis) appendDiagnosis(content, diagnosis);
   bookmarkEditor(content, row, state.report.run_id);
@@ -522,7 +527,8 @@ async function compareRuns() {
     const row = el("tr"), value = report => !report.configuration.generation ? "Not recorded" : report.configuration.generation[key] == null ? "Model default" : String(report.configuration.generation[key]);
     row.append(el("td", "", label), el("td", "", value(a)), el("td", "", value(b))); settingsBody.append(row);
   }
-  settingsTable.append(settingsBody); output.append(el("h3", "", "Recorded generation settings"), settingsTable,
+  for(const [key,label] of [["method","Retrieval method"],["chunk_size","Chunk size"],["overlap","Chunk overlap"],["rerank","Reranking"]]){const row=el("tr"),value=report=>report.configuration.retrieval_settings?.[key] ?? "Legacy profile default";row.append(el("td","",label),el("td","",String(value(a))),el("td","",String(value(b))));settingsBody.append(row);}
+  settingsTable.append(settingsBody); output.append(el("h3", "", "Recorded generation and retrieval settings"), settingsTable,
     el("p", "small muted", a.mode === "demo" ? "Generation settings are not applied to demonstration responses." : "Review these settings alongside defense differences. A seed is not a guarantee of identical results, and these comparisons do not isolate a causal effect."));
   output.append(el("h3", "", "Case-level changes"), el("p", "small", `${comparison.counts.task_regressions} task regressions · ${comparison.counts.task_improvements} task improvements · ${comparison.counts.new_attack_matches} new attack matches · ${comparison.counts.resolved_attack_matches} resolved matches · ${comparison.counts.unmeasured} unmeasured cases`));
   if(comparison.field_summary) output.append(el("p","small",`${comparison.field_summary.regressed} field regressions · ${comparison.field_summary.improved} field improvements · ${comparison.field_summary.reference_changes} changed reference assertions. Field counts are distinct from scenario counts.`));
@@ -658,6 +664,7 @@ function currentConfig() {
            case_ids: scope === "selected" ? [...selectionState.ids] : null,
            source_run_id: ["remaining", "errors", "failed", "attacks"].includes(scope) ? $("#run-source").value || null : null,
            model: $("#run-model").value, case_definitions:state.customDefinitions || null,
+           retrieval:{method:$("#run-retrieval-method").value,chunk_size:Number($("#run-chunk-size").value),overlap:Number($("#run-overlap").value),rerank:$("#run-rerank").value},
            generation: {temperature:Number($("#run-temperature").value), seed:$("#run-seed").value.trim() === "" ? null : Number($("#run-seed").value), think: {default:null,enabled:true,disabled:false}[$("#run-thinking").value],
              num_predict:Number($("#run-max-tokens").value), num_ctx:Number($("#run-context-window").value), request_timeout:Number($("#run-timeout").value)} };
 }
@@ -676,6 +683,8 @@ function restoreGeneration(settings, profile) {
   }
   $("#run-thinking").value = generation.think == null ? "default" : generation.think ? "enabled" : "disabled";
 }
+
+function restoreRetrieval(settings,profile){const value={method:profile==="complex" ? "hybrid":"dense",chunk_size:profile==="complex" ? 1400:700,overlap:profile==="complex" ? 180:100,rerank:"none",...settings};for(const [key,id] of [["method","run-retrieval-method"],["chunk_size","run-chunk-size"],["overlap","run-overlap"],["rerank","run-rerank"]])$("#"+id).value=value[key];}
 
 function renderDomainOptions() {
   const select = $("#run-domain"), previous = select.value;
@@ -729,6 +738,7 @@ function configureFromRun(run) {
   state.customDefinitions=c.case_definitions || null;
   setModelChoice(run.mode === "local" ? run.model : "qwen2.5:7b-instruct-q4_K_M");
   restoreGeneration(c.generation, c.profile || "foundation");
+  restoreRetrieval(c.retrieval_settings,c.profile || "foundation");
   $("#run-profile").value = c.profile || "foundation";
   $("#profile-description").textContent = c.profile === "complex" ? "Enterprise cases retain 21–23 records and typed grading. Review the selected scenarios before launching." : "Foundation cases use short documents and lightweight assertions. Review the selected scenarios before launching.";
   $("#run-mode").value = run.mode;
@@ -786,6 +796,7 @@ function applyPreset(id) {
   state.customDefinitions=preset.config.case_definitions || null;
   setModelChoice(preset.config.model || "qwen2.5:7b-instruct-q4_K_M");
   restoreGeneration(preset.config.generation, preset.config.profile || "foundation");
+  restoreRetrieval(preset.config.retrieval,preset.config.profile || "foundation");
   $("#run-profile").value = preset.config.profile || "foundation";
   renderDomainOptions();
   $("#run-scope").value = preset.config.selection_scope || "sample";
@@ -812,6 +823,7 @@ function updateWorkspace(data) {
   renderQualityPolicy();
   if (typeof renderScenarioBuilder==="function") renderScenarioBuilder();
   if (typeof renderCampaigns==="function") renderCampaigns();
+  if (typeof renderFindings==="function") renderFindings();
   for (const selector of ["#report-select", "#compare-a", "#compare-b", "#run-source"]) {
     for (const option of $(selector).options) {
       const run = state.runs.find(r => r.run_id === option.value);
@@ -986,6 +998,7 @@ async function refreshRuntime() {
   for (const name of installed) { const option = el("option", "", name); option.value = name; $("#run-model").append(option); }
   setModelChoice(current || "qwen2.5:7b-instruct-q4_K_M");
   const ready = runtime.ollama && runtime.chromadb && installed.length > 0 && runtime.models.some(name => ["nomic-embed-text","nomic-embed-text:latest"].includes(name));
+  state.runtimeReady=ready;state.keywordReady=runtime.ollama && installed.length>0;
   const pill = $("#runtime-pill"); pill.textContent = ready ? "● Local runtime ready" : "○ Local setup needed"; pill.classList.toggle("warning", !ready);
   const list = $("#runtime-components"); list.replaceChildren();
   for (const [name, subtitle, componentReady, detail] of [
@@ -994,7 +1007,7 @@ async function refreshRuntime() {
     ["Model weights", "Local generation + nomic embeddings", ready, runtime.models.join(" · ") || "No installed models found"],
   ]) { const card = el("article", "panel runtime-card"); card.append(el("span", "eyebrow", subtitle), el("h2", "", name), el("p", "", detail), el("div", `runtime-status ${componentReady ? "" : "off"}`, componentReady ? "● Available locally" : "○ Preparation required")); list.append(card); }
   $("#runtime-error").textContent = runtime.error || "All experiment requests stay on loopback. Preparing model weights requires internet access once.";
-  $("#run-mode").querySelector('option[value="local"]').disabled = !ready;
+  $("#run-mode").querySelector('option[value="local"]').disabled = !(ready || (state.keywordReady && $("#run-retrieval-method")?.value==="bm25"));
 }
 
 function updateProgress(active) {
@@ -1204,6 +1217,7 @@ $("#run-source").addEventListener("change", () => {
 $("#run-profile").addEventListener("change", () => {
   state.customDefinitions=null;
   const complex = $("#run-profile").value === "complex";
+  restoreRetrieval(null,complex ? "complex":"foundation");
   $("#run-limit").value = 6;
   $("#run-k").value = complex ? 16 : 5;
   $("#run-max-tokens").value = complex ? 1400 : 350;
@@ -1243,3 +1257,6 @@ async function boot() {
   poll();
 }
 boot().catch(e => error(e.message));
+
+$("#run-retrieval-method").addEventListener("change",()=>{$("#run-mode").querySelector('option[value="local"]').disabled=!(state.runtimeReady || (state.keywordReady && $("#run-retrieval-method").value==="bm25"));queueSelectionPreview();});
+for(const id of ["run-chunk-size","run-overlap","run-rerank"])$("#"+id).addEventListener("change",queueSelectionPreview);

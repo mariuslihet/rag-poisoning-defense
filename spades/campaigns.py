@@ -12,7 +12,7 @@ import time
 import uuid
 
 from .reliability import summarize_campaign
-from .settings import validate_generation, validate_model
+from .settings import validate_generation, validate_model, validate_retrieval
 from .suites import plan_cases
 
 ACTIVE = {"starting", "running", "stopping"}
@@ -64,7 +64,7 @@ class CampaignManager:
 
     def _plan(self, body):
         required = {"name", "base_config", "models", "policies", "seeds"}
-        optional = {"thresholds", "retrieval_depths", "temperatures"}
+        optional = {"thresholds", "retrieval_depths", "temperatures", "retrieval_variants"}
         if not isinstance(body, dict) or not required <= set(body) or set(body) - required - optional:
             raise ValueError("Expected campaign name, base configuration, models, policies, seeds and optional parameter sweeps")
         name = body["name"]
@@ -90,6 +90,12 @@ class CampaignManager:
                 raise ValueError(f"{key} requires 1–10 unique {'integer ' if integer else ''}values from {low} to {high}")
             axes[key] = list(values)
         count = len(models) * len(policies) * len(seeds)
+        variants=body.get("retrieval_variants")
+        if "retrieval_variants" in body:
+            if not isinstance(variants,list) or not 1<=len(variants)<=10 or not all(isinstance(value,dict) for value in variants):
+                raise ValueError("Provide 1–10 retrieval configuration variants")
+            # Resolve profile defaults only after validating the base configuration.
+            count *= len(variants)
         for values in axes.values():
             count *= len(values)
         if count > 100:
@@ -98,23 +104,28 @@ class CampaignManager:
         if not cases:
             raise ValueError("Choose at least one scenario for a campaign")
         frozen = copy.deepcopy(config)
+        base_retrieval=validate_retrieval(frozen.get("retrieval"),frozen["profile"])
+        variants=[validate_retrieval({**base_retrieval,**value},frozen["profile"]) for value in variants] if variants is not None else [base_retrieval]
+        if len({json.dumps(value,sort_keys=True) for value in variants})!=len(variants):
+            raise ValueError("Retrieval variants must be unique after applying defaults")
+        axes["retrieval_variants"]=variants
         frozen.update(case_ids=[case.case_id for case in cases], selection_scope="selected", category=None,
                       domain=None, source_run_id=None, limit=len(cases))
         axes.setdefault("thresholds", [frozen["threshold"]])
         axes.setdefault("retrieval_depths", [frozen["k"]])
         axes.setdefault("temperatures", [frozen["generation"]["temperature"]])
         configurations = []
-        for model, policy, threshold, depth, temperature, seed in itertools.product(
-                models, policies, axes["thresholds"], axes["retrieval_depths"], axes["temperatures"], seeds):
+        for model, policy, threshold, depth, temperature, seed, retrieval in itertools.product(
+                models, policies, axes["thresholds"], axes["retrieval_depths"], axes["temperatures"], seeds, variants):
             generation = validate_generation({**frozen["generation"], "seed": seed, "temperature": temperature}, frozen["profile"])
-            configurations.append({"model": model, "policy": policy, "threshold": threshold, "k": depth, "generation": generation})
+            configurations.append({"model": model, "policy": policy, "threshold": threshold, "k": depth, "generation": generation,"retrieval":retrieval})
         return name.strip(), frozen, cases, axes, configurations
 
     def preview(self, body):
         name, frozen, cases, axes, configurations = self._plan(body)
         return {"name": name, "base_config": frozen, "axes": axes, "trial_jobs": len(configurations),
                 "scenario_evaluations": len(configurations) * len(cases),
-                "model_responses": len(configurations) * len(cases) * 2,
+                "model_responses": len(configurations) * plan_cases(cases)["model_responses"],
                 "scenario_plan": plan_cases(cases), "configurations": configurations,
                 "generation_applied": frozen["mode"] == "local",
                 "note": "Preview validates the full matrix and freezes this snapshot only. Creation resolves the submitted selection again; no inference or queue mutation occurs during preview."}
@@ -277,7 +288,7 @@ class CampaignManager:
                     return
                 record, job = candidate
             active = self.manager.snapshot()
-            if active and active.get("status") in ("running", "stopping"):
+            if getattr(self.manager,"replay_busy",False) or (active and active.get("status") in ("running", "stopping")):
                 self.closed.wait(self.poll_interval)
                 continue
             with self.lock:
@@ -292,7 +303,7 @@ class CampaignManager:
             except Exception as exc:
                 active = self.manager.snapshot()
                 with self.lock:
-                    if isinstance(exc, RuntimeError) and active and active.get("status") in ("running", "stopping") and not job.get("cancel_requested"):
+                    if isinstance(exc, RuntimeError) and ((active and active.get("status") in ("running", "stopping")) or getattr(self.manager,"replay_busy",False)) and not job.get("cancel_requested"):
                         job.update(status="queued", started_at=None)
                     else:
                         job.update(status="cancelled" if job.get("cancel_requested") else "failed", error=f"{type(exc).__name__}: {exc}", finished_at=_now())

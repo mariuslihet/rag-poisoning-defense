@@ -1,0 +1,13 @@
+# Exact request capture and diagnostic replay
+
+New Ollama calls record the complete `/api/chat` payload: system and conversation messages, JSON output schema, model, options, thinking setting and keep-alive setting. Timeout and observed model digest are recorded alongside the payload; SHA-256 covers the canonical envelope. Demonstration requests instead capture their exact simulator inputs and are labeled accordingly. References are never inserted by capture; independently authored grading data remains separate.
+
+Open Request replay or the original case action. Choose the run, case, arm and zero-based stored turn (the UI displays one-based turn names), inspect the capture, optionally export it, then explicitly replay. Historical responses without request captures are unavailable; Spades never claims a reconstructed prompt is exact.
+
+Replay repeats the recorded input without embeddings, indexing, retrieval, defense recomputation or regeneration of earlier responses. Local inference still requires installed local weights and ignores proxy settings. If the recorded weight identity is known and differs from installed weights, generation is rejected. Prior outputs remain frozen; replay is a diagnostic single-response experiment and not a full conversation re-evaluation. Same request and seed do not guarantee the same answer across runtime/hardware changes.
+
+Replays share execution capacity with normal experiments and campaigns. The API accepts only a saved evidence reference, never a caller-supplied endpoint or replacement payload. Captures are fingerprint-checked and bounded before use. Each result is stored under `output/replays/<id>.json`, with original response, replayed response, changed/unchanged flag, source reference and available completion metadata. Failed attempts remain visible. Terminal state is published after persistence. Interrupted replays require a new explicit action; startup never launches inference. Up to 100 diagnostic artifacts are retained without automatic pruning.
+
+API: POST `/api/replay/inspect` or `/api/replay/start` with `{run_id,case_id,arm,turn}`; arm is `vulnerable` or `secured` and turn defaults to zero. Start returns 202; GET `/api/replay/<id>` returns status/result and GET `/api/replays` lists artifacts. Shared loopback Host/Origin/session protections apply.
+
+Functional validation on 2026-10-31 used a two-turn Qwen3.5 procurement control. Four real chat calls completed with zero embeddings under BM25 plus term-coverage reranking. Replaying its final secured request reproduced the original response with the same recorded model digest. This is a targeted integration check, not a general reliability benchmark.

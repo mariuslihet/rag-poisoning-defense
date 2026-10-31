@@ -6,6 +6,7 @@ import json
 import math
 from statistics import NormalDist
 from .datasets import dataset_identity
+from .settings import validate_retrieval
 
 
 def wilson_interval(successes, trials):
@@ -42,7 +43,8 @@ def summarize_campaign(campaign, reports):
         identity = {"model": config.get("model"), "policy": config.get("policy"),
                     "mode": config.get("mode"), "profile": config.get("profile"),
                     "threshold": config.get("threshold"), "k": config.get("k"),
-                    "generation": generation, "case_ids": config.get("case_ids", [])}
+                    "generation": generation, "case_ids": config.get("case_ids", []),
+                    "retrieval":validate_retrieval(config.get("retrieval"),config.get("profile","foundation"))}
         key = json.dumps(identity, sort_keys=True, allow_nan=False)
         group = groups.setdefault(key, {"configuration": identity, "planned_trials": 0, "completed_trials": 0,
                     "successful_trials": 0, "excluded_trials": [], "seeds": [], "per_case": defaultdict(list),
@@ -78,6 +80,8 @@ def summarize_campaign(campaign, reports):
                 reason = "The saved dataset or grading identity differs from the frozen trial"
             elif report.get("configuration", {}).get("case_definitions") != config.get("case_definitions"):
                 reason = "The saved authored definitions differ from the frozen trial"
+            elif validate_retrieval(report.get("configuration",{}).get("retrieval_settings"),config["profile"])!=identity["retrieval"]:
+                reason = "The recorded retrieval configuration differs from the frozen trial"
         if reason:
             group["excluded_trials"].append({"job_id": job["id"], "run_id": job.get("run_id"), "seed": seed, "reason": reason})
             continue

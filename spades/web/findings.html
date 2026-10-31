@@ -1,0 +1,30 @@
+<section id="view-findings" class="view" hidden>
+  <div class="page-heading"><div><div class="eyebrow">TRACK / REMEDIATE / VERIFY</div><h1>Security findings.</h1><p>Keep remediation decisions linked to the original saved evidence and explicit verification runs.</p></div><button id="finding-refresh" class="secondary" type="button">Refresh findings</button></div>
+  <section class="panel"><h2>Create a finding from saved evidence</h2><p class="small muted">Severity and ownership are operator decisions. Creating a finding makes no model calls and does not modify the linked report.</p>
+    <form id="finding-create-form">
+      <div class="form-grid"><label for="finding-source-run">Original experiment<select id="finding-source-run" required></select></label><label for="finding-source-case">Original scenario<select id="finding-source-case" required></select></label></div>
+      <label for="finding-title">Finding title<input id="finding-title" maxlength="160" required placeholder="Describe the observed problem and its scope"></label>
+      <div class="form-grid"><label for="finding-severity">Severity<select id="finding-severity"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option><option value="critical">Critical</option></select></label><label for="finding-assignee">Local owner label<input id="finding-assignee" maxlength="100" placeholder="Person or team label; no message is sent"></label></div>
+      <label for="finding-tags">Tags · separated by commas<input id="finding-tags" maxlength="500" placeholder="e.g. retrieval, procurement, release-review"></label>
+      <label for="finding-note">Initial observations<textarea id="finding-note" rows="3" maxlength="4000"></textarea></label>
+      <p id="finding-source-message" class="small muted" role="status"></p><button id="finding-create" class="primary" type="submit" disabled>Create finding</button>
+    </form><p id="finding-error" class="error" role="alert"></p>
+  </section>
+  <section class="panel"><div class="section-heading"><h2>Remediation register</h2><button id="finding-export-all" class="secondary" type="button">Export findings and histories</button></div>
+    <div id="finding-summary" class="diagnostic-grid"></div><div class="filters"><label for="finding-search">Search findings<input id="finding-search" type="search" placeholder="Title, owner, tags, note or scenario"></label><label for="finding-status-filter">Status<select id="finding-status-filter"><option value="">All statuses</option><option value="open">Open</option><option value="investigating">Investigating</option><option value="fixed">Fixed</option><option value="accepted">Accepted</option></select></label><label for="finding-severity-filter">Severity<select id="finding-severity-filter"><option value="">All severities</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label></div>
+    <p id="finding-count" class="small muted" role="status"></p><div id="finding-list"></div>
+  </section>
+</section>
+
+<dialog id="finding-editor-dialog" aria-labelledby="finding-editor-title"><form id="finding-editor-form">
+  <div class="dialog-heading"><div><span class="eyebrow">PRESERVE EVERY DECISION</span><h2 id="finding-editor-title">Update finding</h2></div><button type="button" class="icon-button close-dialog" aria-label="Close finding editor">Close</button></div>
+  <p id="finding-editor-revision" class="small muted"></p>
+  <label for="finding-edit-title">Finding title<input id="finding-edit-title" maxlength="160" required></label>
+  <div class="form-grid"><label for="finding-edit-status">Status<select id="finding-edit-status"><option value="open">Open</option><option value="investigating">Investigating</option><option value="fixed">Fixed</option><option value="accepted">Accepted risk</option></select></label><label for="finding-edit-severity">Severity<select id="finding-edit-severity"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="critical">Critical</option></select></label></div>
+  <label for="finding-edit-assignee">Local owner label<input id="finding-edit-assignee" maxlength="100"></label><label for="finding-edit-tags">Tags · separated by commas<input id="finding-edit-tags" maxlength="500"></label>
+  <label for="finding-edit-note">Decision and review note<textarea id="finding-edit-note" rows="5" maxlength="4000"></textarea></label>
+  <section id="finding-verification-section" class="panel" hidden><h3>Verify the fix</h3><p class="small muted">Choose a later completed experiment assessing the same exact scenario, dataset and grading identity. It must pass the secured task without runtime errors, matched attacks or restricted-data disclosure. Local-model findings require local-model verification. Model and defense changes are recorded rather than treated as causal proof.</p><label for="finding-verification-run">Verification experiment<select id="finding-verification-run"></select></label><p id="finding-verification-case" class="small muted"></p></section>
+  <p id="finding-editor-message" class="small muted"></p><p id="finding-editor-error" class="error" role="alert"></p><div class="dialog-actions"><button type="button" class="secondary close-dialog">Cancel</button><button id="finding-editor-save" class="primary" type="submit">Save finding revision</button></div>
+</form></dialog>
+
+<dialog id="finding-history-dialog" aria-labelledby="finding-history-title"><div class="dialog-heading"><h2 id="finding-history-title">Finding decision history</h2><button type="button" class="icon-button close-dialog" aria-label="Close finding history">Close</button></div><div id="finding-history-content"></div></dialog>

@@ -3,6 +3,7 @@
 import json
 from datetime import datetime, timezone
 from .quality import assess_report, validate_policy
+from .settings import validate_retrieval
 
 
 def compare_policies(report, reference_policy, candidate_policy):
@@ -35,7 +36,8 @@ def compatibility_key(report):
     return json.dumps({"mode":report.get("mode"), "model":report.get("model"),
         "profile":config.get("profile","foundation"), "dataset":config.get("dataset_version"),
         "grading":config.get("grading_version"), "generation":config.get("generation"),
-        "model_digest":(report.get("performance") or {}).get("model_digest"), "case_ids":sorted(ids)},sort_keys=True,allow_nan=False)
+        "model_digest":(report.get("performance") or {}).get("model_digest"), "case_ids":sorted(ids),
+        "retrieval":validate_retrieval(config.get("retrieval_settings"),config.get("profile","foundation"))},sort_keys=True,allow_nan=False)
 
 
 def acceptance_history(reports, anchor_id, policy):

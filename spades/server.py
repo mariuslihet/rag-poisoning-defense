@@ -21,7 +21,7 @@ from .comparison import compare_cases
 from .analysis import analyze_report
 from .suites import validate_suite, export_suite, plan_cases, compare_suite_revisions
 from .datasets import dataset_identity
-from .settings import validate_generation, validate_model
+from .settings import validate_generation, validate_model, validate_retrieval
 from .quality import validate_policy, assess_report
 from .quality_history import compare_policies, acceptance_history
 
@@ -29,11 +29,11 @@ ASSETS = Path(__file__).parent / "web"
 
 
 def validate_config(config):
-    if not isinstance(config, dict) or set(config) - {"mode", "threshold", "k", "limit", "category", "policy", "profile", "domain", "case_ids", "concurrency", "selection_scope", "source_run_id", "model", "generation", "case_definitions"}:
+    if not isinstance(config, dict) or set(config) - {"mode", "threshold", "k", "limit", "category", "policy", "profile", "domain", "case_ids", "concurrency", "selection_scope", "source_run_id", "model", "generation", "case_definitions", "retrieval"}:
         raise ValueError("Expected known experiment options")
     result = {"mode": "demo", "threshold": 0.7, "k": 5, "limit": 6, "category": None, "policy": "strict", "profile": "foundation",
               "domain": None, "case_ids": None, "concurrency": 2, "selection_scope": "sample", "source_run_id": None,
-              "model": DEFAULT_MODEL, "generation": None, "case_definitions":None}
+              "model": DEFAULT_MODEL, "generation": None, "case_definitions":None, "retrieval":None}
     result.update(config)
     if result["category"] == "":
         result["category"] = None
@@ -55,6 +55,7 @@ def validate_config(config):
         raise ValueError("Unknown scenario profile")
     result["model"] = validate_model(result["model"])
     result["generation"] = validate_generation(result["generation"], result["profile"])
+    result["retrieval"] = validate_retrieval(result["retrieval"],result["profile"])
     if result["case_definitions"] is not None:
         from .authoring import validate_definition
         if result["profile"] != "complex" or not isinstance(result["case_definitions"],list) or not 1 <= len(result["case_definitions"]) <= 100:
@@ -95,6 +96,15 @@ class RunManager:
         self.cancel_event = threading.Event()
         self.active = None
         self._campaigns = None
+        self._replays = None
+        self.replay_busy = False
+
+    @property
+    def replays(self):
+        from .replay import ReplayManager
+        with self.lock:
+            if self._replays is None:self._replays=ReplayManager(self)
+            return self._replays
 
     @property
     def campaigns(self):
@@ -116,7 +126,8 @@ class RunManager:
         if (not isinstance(data, dict) or not isinstance(data.get("presets"), list)
                 or not isinstance(data.get("bookmarks"), list) or not isinstance(data.get("experiments", {}), dict)
                 or not isinstance(data.get("suites", []), list) or not isinstance(data.get("quality_policies", []), list)
-                or not isinstance(data.get("custom_scenarios", []), list) or not isinstance(data.get("investigations", []),list)):
+                or not isinstance(data.get("custom_scenarios", []), list) or not isinstance(data.get("investigations", []),list)
+                or not isinstance(data.get("findings",[]),list)):
             raise ValueError("Workspace data is invalid; restore output/workspace.json from a backup")
         return data
 
@@ -132,7 +143,15 @@ class RunManager:
                     "experiments": data.get("experiments", {}), "suites": data.get("suites", []),
                     "quality_policy": data.get("quality_policy", {"policy":validate_policy(), "revision":0, "updated_at":None}),
                     "quality_policies":data.get("quality_policies",[]), "custom_scenarios":data.get("custom_scenarios",[]),
-                    "investigations":data.get("investigations",[])}
+                    "investigations":data.get("investigations",[]),"findings":data.get("findings",[])}
+
+    def save_finding(self,body,update=False):
+        from .findings import create_finding, update_finding
+        with self.lock:
+            data=self._read_workspace()
+            (update_finding if update else create_finding)(data,body,self.reports())
+            self._write_workspace(data)
+            return self.workspace()
 
     def save_investigation(self, body):
         from .investigations import validate_filters
@@ -435,12 +454,13 @@ class RunManager:
 
     def start(self, raw_config):
         with self.lock:
-            if self.active and self.active["status"] in ("running", "stopping"):
+            if self.replay_busy or (self.active and self.active["status"] in ("running", "stopping")):
                 raise RuntimeError("An experiment is already running")
         config, suite, previous = self.resolve_selection(raw_config)
         if config["mode"] == "local":
             runtime = doctor(config["model"])
-            if not runtime["ready"]:
+            ready=runtime["ready"] if config["retrieval"]["method"]!="bm25" else runtime.get("ollama") and config["model"] in runtime.get("models",[])
+            if not ready:
                 raise ValueError("The selected local model or embedding runtime is not ready. Check the Runtime page.")
             if config["source_run_id"]:
                 source = self.reports()[config["source_run_id"]][1]
@@ -448,7 +468,7 @@ class RunManager:
                 if previous_digest and runtime.get("model_digest") and previous_digest != runtime["model_digest"]:
                     raise ValueError("The installed model weights changed. Start a fresh experiment instead of continuing this report.")
         with self.lock:
-            if self.active and self.active["status"] in ("running", "stopping"):
+            if self.replay_busy or (self.active and self.active["status"] in ("running", "stopping")):
                 raise RuntimeError("An experiment is already running")
             run_id = uuid.uuid4().hex
             self.cancel_event.clear()
@@ -479,7 +499,7 @@ class RunManager:
                                checkpoint=checkpoint, activity=activity,
                                cache_path=self.output / ".cache" / "embeddings.sqlite3",
                                selection_scope=config["selection_scope"], previous_case_ids=previous,
-                               source_run_id=config["source_run_id"], generation=config["generation"],case_definitions=config["case_definitions"])
+                               source_run_id=config["source_run_id"], generation=config["generation"],case_definitions=config["case_definitions"],retrieval=config["retrieval"])
             write_report(report, folder)
             with self.lock:
                 self.active["status"] = ("cancelled" if report["status"] == "cancelled" else
@@ -536,6 +556,9 @@ def make_handler(manager):
                       "/comparison-view.js": ("comparison-view.js", "text/javascript; charset=utf-8"),
                       "/styles.css": ("styles.css", "text/css; charset=utf-8")}
             assets.update({"/authoring.js":("authoring.js","text/javascript; charset=utf-8"),
+                           "/findings.js":("findings.js","text/javascript; charset=utf-8"),
+                           "/portable.js":("portable.js","text/javascript; charset=utf-8"),
+                           "/replay.js":("replay.js","text/javascript; charset=utf-8"),
                            "/investigations.js":("investigations.js","text/javascript; charset=utf-8"),
                            "/campaign-matrix.js":("campaign-matrix.js","text/javascript; charset=utf-8"),
                            "/coverage.js":("coverage.js","text/javascript; charset=utf-8"),
@@ -556,6 +579,11 @@ def make_handler(manager):
                 return self._respond(200, {"runs": manager.history(), "active": manager.snapshot()})
             if path == "/api/progress":
                 return self._respond(200, {"active": manager.snapshot()})
+            if path == "/api/replays":return self._respond(200,{"replays":manager.replays.list()})
+            replay_match=re.fullmatch(r"/api/replay/([a-f0-9]{32})",path)
+            if replay_match:
+                try:return self._respond(200,manager.replays.get(replay_match[1]))
+                except ValueError as exc:return self._respond(404,{"error":str(exc)})
             if path == "/api/campaigns":
                 return self._respond(200,{"campaigns":manager.campaigns.list()})
             campaign_match=re.fullmatch(r"/api/campaign/([a-f0-9]{32})",path)
@@ -611,7 +639,7 @@ def make_handler(manager):
                 length = int(self.headers.get("Content-Length", "0"))
                 path = urlsplit(self.path).path
                 large_routes={"/api/campaign/preview","/api/coverage","/api/ingest","/api/scenario","/api/custom/run","/api/custom/selection","/api/suite","/api/suite/import","/api/campaign/create","/api/preset"}
-                maximum=8*1024*1024 if path in large_routes else 8192
+                maximum=24*1024*1024 if path=="/api/bundle/verify" else 65536 if path in ("/api/finding","/api/finding/update") else 8*1024*1024 if path in large_routes else 8192
                 self.connection.settimeout(5)
                 if not 0 < length <= maximum:
                     # Drain a small rejected body so Windows can deliver the 413
@@ -620,6 +648,22 @@ def make_handler(manager):
                         self.rfile.read(length)
                     return self._respond(413, {"error": f"Request body must be 1–{maximum} bytes"})
                 body = json.loads(self.rfile.read(length))
+                if path=="/api/finding":return self._respond(200,manager.save_finding(body))
+                if path=="/api/finding/update":return self._respond(200,manager.save_finding(body,update=True))
+                if path=="/api/bundle/export":
+                    from .bundles import build_bundle
+                    content,filename=build_bundle(manager.reports(),manager.workspace(),body)
+                    return self._respond(200,content,"application/zip",filename)
+                if path=="/api/bundle/verify":
+                    from .bundles import verify_bundle
+                    return self._respond(200,verify_bundle(body))
+                if path=="/api/regression-pack":
+                    from .regressions import build_regression_manifest
+                    return self._respond(200,manager.save_suite(build_regression_manifest(manager.reports(),body),manifest=True))
+                if path=="/api/replay/inspect":
+                    from .replay import inspect_request
+                    return self._respond(200,inspect_request(manager.reports(),body))
+                if path=="/api/replay/start":return self._respond(202,manager.replays.start(body))
                 if path == "/api/investigation/search":
                     from .investigations import search_evidence
                     return self._respond(200,search_evidence([record[1] for record in manager.reports().values()],body))
@@ -633,7 +677,7 @@ def make_handler(manager):
                     return self._respond(200,coverage_plan(config,cases,[record[1] for record in manager.reports().values()],focus=body["focus"],budget=body["budget"]))
                 if path in ("/api/selection","/api/custom/selection"):
                     _, suite, previous = manager.resolve_selection(body)
-                    return self._respond(200, {"count": len(suite), "case_ids": [case.case_id for case in suite], "previous_count": len(previous), "model_requests": len(suite) * 2, "plan": plan_cases(suite)})
+                    return self._respond(200, {"count": len(suite), "case_ids": [case.case_id for case in suite], "previous_count": len(previous), "model_requests": plan_cases(suite)["model_responses"], "plan": plan_cases(suite)})
                 if path == "/api/ingest":
                     from .ingestion import extract_document
                     if not isinstance(body,dict) or set(body)!={"filename","data"}:

@@ -43,16 +43,21 @@ def validate_suite(body, manifest=False):
 
 def plan_cases(cases):
     domains, families = {}, {}
-    records, characters, assertions = 0, 0, 0
+    records, characters, assertions, responses, turns_total = 0, 0, 0, 0, 0
     for case in cases:
         domain = case.domain or case.case_id.split("-")[0]
         domains[domain] = domains.get(domain, 0) + 1
         families[case.category] = families.get(case.category, 0) + 1
         documents = [case.legitimate] + case.supporting + case.distractors + ([case.poison] if case.poison else [])
+        turns=getattr(case,"turns",[])
+        for turn in turns:
+            documents += turn.get("documents",[])+turn.get("tool_outputs",[])
+        turns_total += max(1,len(turns))
+        responses += max(1,len(turns))*2
         records += len(documents) + 1  # Runtime adds the restricted synthetic appendix.
         characters += sum(len(document.text) for document in documents)
         assertions += len(case.rubric)
-    return {"scenarios": len(cases), "model_responses": len(cases) * 2,
+    return {"scenarios": len(cases), "model_responses": responses, "conversation_turns":turns_total,
             "domains": domains, "families": families, "source_records": records,
             "fixture_characters": characters, "typed_assertions_per_arm": assertions,
             "paired_typed_assertions": assertions * 2,

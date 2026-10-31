@@ -31,7 +31,8 @@ async function coverageConfig() {
 
 function updateCoverageSelection() {
   const result=coverageState.result;if(!result)return;
-  $("#coverage-selection").textContent=`${coverageState.selected.size} selected · ${coverageState.selected.size*2} paired responses · budget ${result.budget}. Review the exact selection before execution.`;
+  const responses=result.cases.filter(item=>coverageState.selected.has(item.case_id)).reduce((count,item)=>count+2*(item.turn_count || 1),0);
+  $("#coverage-selection").textContent=`${coverageState.selected.size} selected · ${responses} paired responses · budget ${result.budget}. Review the exact selection before execution.`;
   $("#coverage-configure").disabled=!coverageState.selected.size;
 }
 
@@ -98,7 +99,7 @@ $("#coverage-from-report").addEventListener("click",()=>{
 $("#coverage-configure").addEventListener("click",()=>{
   const result=coverageState.result;if(!result || !coverageState.selected.size)return;
   const config=result.config;
-  configureFromRun({mode:config.mode,model:config.model,configuration:{...config,trust_threshold:config.threshold,retrieval_k:config.k}});
+  configureFromRun({mode:config.mode,model:config.model,configuration:{...config,trust_threshold:config.threshold,retrieval_k:config.k,retrieval_settings:config.retrieval}});
   $("#run-source").value="";$("#run-scope").value="selected";$("#run-domain").value="";$("#run-category").value="";
   $("#run-concurrency").value=config.concurrency;selectionState.ids=new Set(coverageState.selected);syncSelectionControls();
   $("#profile-description").textContent=`Coverage follow-up: ${coverageState.selected.size} exact scenarios. Review execution settings before starting or saving as a suite.`;

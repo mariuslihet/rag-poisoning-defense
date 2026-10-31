@@ -34,6 +34,7 @@ class Case:
     domain: str = ""
     clearance: int = 0
     required_sources: list[str] = field(default_factory=list)
+    turns: list[dict] = field(default_factory=list)
 
 
 def build_suite(profile="foundation") -> list[Case]:

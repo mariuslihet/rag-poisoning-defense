@@ -36,7 +36,7 @@ class FakeRunner:
                 cancelled=self.active["status"]=="stopping"
                 ids=config["case_ids"][:1] if cancelled else config["case_ids"]
                 report={"status":"cancelled" if cancelled else "completed","mode":config["mode"],"model":config["model"],"planned_cases":len(config["case_ids"]),
-                        "configuration":{"generation":config["generation"],"profile":config["profile"],"policy":config["policy"],"trust_threshold":config.get("threshold",.7),"retrieval_k":config.get("k",5),"dataset_version":"0.2","grading_version":"substring-2"},"metrics":{"error_cases":0},
+                        "configuration":{"generation":config["generation"],"profile":config["profile"],"policy":config["policy"],"trust_threshold":config.get("threshold",.7),"retrieval_k":config.get("k",5),"dataset_version":"0.2","grading_version":"substring-2","retrieval_settings":config.get("retrieval")},"metrics":{"error_cases":0},
                         "results":[{"case_id":case_id,"category":"baseline" if case_id=="control" else "indirect_injection","secured_utility":True,"secured_success":False,"error":None} for case_id in ids]}
                 self.saved[run_id]=(self.output/"report.json",report); self.active["status"]=report["status"]
         threading.Thread(target=finish,daemon=True).start()
@@ -175,6 +175,20 @@ class CampaignTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):self.campaigns.create(self.body)
         self.assertEqual(self.campaigns.list(),[])
         self.assertFalse(list(self.campaigns.output.glob("*.json")))
+
+    def test_retrieval_variants_inherit_base_and_form_separate_groups(self):
+        body={**self.body,"seeds":[1],"base_config":{"limit":2,"retrieval":{"method":"dense","chunk_size":900,"overlap":100,"rerank":"none"}},
+              "retrieval_variants":[{"method":"dense"},{"method":"bm25"},{"method":"hybrid","rerank":"term_coverage"}]}
+        result=self.wait(self.campaigns.create(body)["id"])
+        self.assertEqual(len(result["jobs"]),6)
+        self.assertTrue(all(job["config"]["retrieval"]["chunk_size"]==900 for job in result["jobs"]))
+        self.assertEqual(len(result["reliability"]["groups"]),6)
+        self.assertTrue(all(group["completed_trials"]==1 for group in result["reliability"]["groups"]))
+
+    def test_invalid_or_duplicate_retrieval_variants_do_not_start(self):
+        for variants in ([],[None],[{},{}],[{"method":"unknown"}],[{"chunk_size":256,"overlap":256}]):
+            with self.assertRaises(ValueError):self.campaigns.create({**self.body,"retrieval_variants":variants})
+        self.assertEqual(self.runner.calls,[])
 
     def test_shutdown_during_readiness_start_cannot_leave_uncancelled_work(self):
         self.runner.start_gate=threading.Event()

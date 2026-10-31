@@ -29,6 +29,10 @@ def main():
     run.add_argument("--max-tokens", type=int, help="Response token limit; defaults to the selected profile")
     run.add_argument("--context-window", type=int, help="Model context tokens; defaults to the selected profile")
     run.add_argument("--request-timeout", type=int, default=180, help="Local HTTP request timeout in seconds (30–600)")
+    run.add_argument("--retrieval-method",choices=["dense","bm25","hybrid"])
+    run.add_argument("--chunk-size",type=int)
+    run.add_argument("--chunk-overlap",type=int)
+    run.add_argument("--rerank",choices=["none","term_coverage"],default="none")
     run.add_argument("--output", type=Path, default=Path("output"))
     run.add_argument("--gate-policy", type=Path, help="Assess the final report against a JSON acceptance policy")
     run.add_argument("--limit", type=int, default=6, help="Maximum sampled cases (default: 6)")
@@ -85,15 +89,18 @@ def main():
                 **({"num_predict": args.max_tokens} if args.max_tokens is not None else {}),
                 **({"num_ctx": args.context_window} if args.context_window is not None else {})}, args.profile)
             chosen = select_cases(args.category, limit, args.profile, args.domain, args.case_id)
+            from .settings import validate_retrieval
+            retrieval=validate_retrieval({key:value for key,value in {"method":args.retrieval_method,"chunk_size":args.chunk_size,"overlap":args.chunk_overlap,"rerank":args.rerank}.items() if value is not None},args.profile)
         except (OSError, ValueError, TypeError) as exc:
             parser.error(str(exc))
         print(f"Selected {len(chosen)} scenarios / {len(chosen) * 2} model responses / {args.concurrency} concurrent workers", flush=True)
         if args.mode == "local":
             from .providers import Ollama
             try:
-                import chromadb  # noqa: F401
                 provider = Ollama(model=args.model, generation=generation)
-                provider.embed(["Spades readiness check"])
+                if retrieval["method"]!="bm25":
+                    import chromadb  # noqa: F401
+                    provider.embed(["Spades readiness check"])
                 provider.answer("Reply with READY.", [], True)
             except (ImportError, OSError, ValueError, KeyError) as exc:
                 parser.exit(2, f"Local mode unavailable: {exc}\nInstall the local extra and start Ollama with both required models.\n")
@@ -101,7 +108,7 @@ def main():
                            category=args.category, limit=limit, domain=args.domain, case_ids=args.case_id,
                            policy=args.policy, profile=args.profile,
                            concurrency=args.concurrency,
-                           generation=generation,
+                           generation=generation,retrieval=retrieval,
                            selection_scope="all" if args.all else "selected" if args.case_id else "sample",
                            checkpoint=lambda report: write_checkpoint(report, args.output),
                            progress=lambda done, total, case: print(f"[{done}/{total}] {case}", flush=True))
